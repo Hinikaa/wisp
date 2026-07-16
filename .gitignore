@@ -4,3 +4,4 @@ test_lexer
 test_parser
 test_lua_env
 test_executor
+wisp-backup

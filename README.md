@@ -78,8 +78,8 @@ end
 ```
 
 ```
-wisp> hello claude
-hello, claude
+wisp> hello world
+hello, world
 wisp> nums | sorted
 n=1
 n=2

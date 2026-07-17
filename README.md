@@ -349,10 +349,6 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
 - **`kill %N` sends SIGTERM** to background job process groups. `jobs -l`
   shows PIDs. Standard job control, nothing exotic.
 
-## Disclaimer
-
-This project uses C, C++, Lua, and Makefiles. **I'm still learning C++ in particular**, so I used AI as a teaching assistant to help me debug and understand parts I haven't mastered yet.
-
 ## License
 
 MIT, see `LICENSE`. Vendored `linenoise.c`/`linenoise.h` are BSD-2-Clause,

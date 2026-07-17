@@ -65,6 +65,21 @@ Or run a one-off Lua command:
 ./wisp -c 'for i=1,5 do print(i) end'
 ```
 
+### Script mode
+
+Run a Lua file directly:
+
+```
+./wisp -f script.lua
+```
+
+Or use a shebang:
+
+```lua
+#!/usr/bin/env wisp
+print("hello from script")
+```
+
 ### Shell mode
 
 Bare lines are ordinary shell syntax: `ls -la`, `cd ..`, `cat file | grep foo`,
@@ -136,7 +151,7 @@ boundary, the same row-per-line format shown for terminal display.
 Tab completion works for:
 
 - **Commands** (first word): builtins (`cd`, `exit`, `export`, `command`,
-  `jobs`, `fg`, `bg`), Lua global functions, and `$PATH` executables
+  `jobs`, `fg`, `bg`, `kill`), Lua global functions, and `$PATH` executables
   (filtered to `+x` only)
 - **Filenames** (later words): with `/` suffix for directories, hidden files
   shown only when prefix starts with `.`
@@ -225,6 +240,7 @@ people actually use.
 - Run any shell command: `ls`, `grep -r src/`, `make && make install`
 - Redirects: `<`, `>`, `>>`, `2>`
 - Background jobs: `sleep 30 &` then `jobs`, `fg %1`, `bg %1`
+- Kill background jobs: `kill %1`, `kill -9 %1`
 - `$?`, `$(cmd)`, `$VAR` expansion
 - Glob patterns: `*.cpp`, `src/**/*.h`
 - Tab completion: commands, filenames, Lua functions
@@ -232,6 +248,7 @@ people actually use.
 - Lua config: define `prompt()`, aliases, pipeline stages in `init.lua`
 - Structured pipelines: `nums | sorted | wc -l` passes Lua tables between stages
 - One-off commands: `./wisp -c 'return {1, 2, 3}'`
+- Script execution: `./wisp -f script.lua` or shebang `#!/usr/bin/env wisp`
 - Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
 
 ### What wisp v1.1 can't do (yet)
@@ -328,9 +345,9 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
   child exactly like a subshell would.
 - **`-c` flag runs Lua, not shell syntax.** `./wisp -c 'print("hi")'` works
   directly -- the argument is evaluated as a Lua expression/statement, same
-  as the `:` sigil in interactive mode.
-- Not a `bash`/`zsh` replacement for scripts -- there's no script-file or
-  shebang execution mode in v1, interactive use only.
+  as the `:` sigil in interactive mode. Use `-f` for script files.
+- **`kill %N` sends SIGTERM** to background job process groups. `jobs -l`
+  shows PIDs. Standard job control, nothing exotic.
 
 ## Disclaimer
 

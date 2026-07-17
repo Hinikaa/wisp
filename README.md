@@ -228,6 +228,10 @@ iterations takes 220ms (5x slower due to fork/exec per stage).
 - Not a `bash`/`zsh` replacement for scripts -- there's no script-file or
   shebang execution mode in v1, interactive use only.
 
+## Disclaimer
+
+This project uses C, C++, Lua, and Makefiles. **I'm still learning C++ in particular**, so I used AI as a teaching assistant to help me debug and understand parts I haven't mastered yet.
+
 ## License
 
 MIT, see `LICENSE`. Vendored `linenoise.c`/`linenoise.h` are BSD-2-Clause,

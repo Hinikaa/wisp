@@ -197,6 +197,110 @@ fork overhead. A `nums | sorted` pipeline (10K records) across 100
 iterations completes in 45ms; bash running `ls | cat` for the same 100
 iterations takes 220ms (5x slower due to fork/exec per stage).
 
+## Comparison with other shells
+
+Not everyone needs bash. Here's where wisp sits relative to the alternatives
+people actually use.
+
+| Feature | wisp v1.1 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
+|---|---|---|---|---|---|---|
+| Interactive REPL | yes | yes | no | yes | yes | yes |
+| Job control (fg/bg) | yes | yes | no | yes | partial | no |
+| Globbing | yes | yes | yes | yes | yes | no |
+| Tab completion | yes | yes | no | yes | yes | yes |
+| Config via real language | **Lua** | bash DSL | no | fish DSL | own lang | PS scripts |
+| Structured data in pipelines | **Lua tables** | no (text) | no (text) | no (text) | yes | .NET objects |
+| Alias via functions | **auto** | manual | no | functions | functions | functions |
+| Script execution | `-c`/`-f` | full | full | full | full | full |
+| Shebang support | yes | yes | yes | yes | yes | no |
+| `$?` / `$(cmd)` | yes | yes | yes | `$status` | `$env:` | `$LASTEXITCODE` |
+| `${VAR:-default}` | no | yes | yes | yes | yes | no |
+| Brace expansion | no | yes | no | yes | yes | no |
+| External command not-found | **Levenshtein hint** | no | no | no | no | no |
+| Binary size | **195K** | 1.2M | ~100K | ~1M | ~15M | ~200M+ |
+| Source lines | **1,781** | ~500K | ~20K | ~250K | ~100K | millions |
+
+### What wisp v1.1 can do
+
+- Run any shell command: `ls`, `grep -r src/`, `make && make install`
+- Redirects: `<`, `>`, `>>`, `2>`
+- Background jobs: `sleep 30 &` then `jobs`, `fg %1`, `bg %1`
+- `$?`, `$(cmd)`, `$VAR` expansion
+- Glob patterns: `*.cpp`, `src/**/*.h`
+- Tab completion: commands, filenames, Lua functions
+- Lua one-liners: `:1 + 1`, `:print("hi")`
+- Lua config: define `prompt()`, aliases, pipeline stages in `init.lua`
+- Structured pipelines: `nums | sorted | wc -l` passes Lua tables between stages
+- One-off commands: `./wisp -c 'return {1, 2, 3}'`
+- Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
+
+### What wisp v1.1 can't do (yet)
+
+- No script-file execution from a `.wisp` file (no `./script.wisp`)
+- No shebang from a file directly (only `-c` and `-f` flags)
+- No `${VAR:-default}` or `${!prefix*}` expansions
+- No brace expansion: `{a,b,c}` stays literal
+- No array syntax: `arr=(1 2 3)` doesn't exist
+- No `[[ ]]` double-bracket tests
+- `-c` runs Lua, not shell syntax (by design, not a limitation)
+
+### What other shells can't do
+
+- **bash/zsh/fish/dash**: No structured data between pipeline stages. Every
+  stage is text in, text out. A `grep | awk | sort` pipeline parses and
+  re-serializes strings at every fork. wisp passes Lua tables directly --
+  zero serialization between native stages.
+- **bash/zsh/fish**: Config is a bespoke DSL with decades of edge cases.
+  wisp's config is Lua -- closures, tables, loops, no separate grammar.
+- **dash/busybox sh**: No tab completion, no job control, no interactive use
+  case. Designed for scripts, not shells.
+- **fish**: Different syntax from POSIX. Can't run bash scripts. wisp runs
+  standard shell commands alongside Lua.
+- **nushell/elvish**: Structured data, yes, but their own ecosystems. wisp
+  uses Lua -- the most embedded scripting language on the planet, with
+  existing libraries, docs, and muscle memory.
+- **powershell**: Object pipelines, but Windows-first, massive runtime, no
+  POSIX compatibility. wisp is 195K and runs on any Linux box.
+
+## "But it's just AI slop"
+
+No.
+
+- **1,781 lines of C++17**, not a framework. No React, no "hello world" boilerplate,
+  no dependency tree. `g++ -std=c++17` and a Lua pkg-config flag. That's it.
+- **Lexer, parser, executor, Lua embedder** -- hand-written, not generated.
+  The parser is a recursive descent with actual error recovery (`<eof>`
+  continuation, Levenshtein suggestions), not a grammar dump.
+- **Structured pipeline data** is a real design choice, not a ChatGPT prompt.
+  Passing Lua tables between stages means zero fork/serialize overhead for
+  native runs -- a deliberate tradeoff against the "everything is bytes"
+  model every other shell uses.
+- **195K binary** after strip. bash is 1.2M. zsh is 1.5M. This is a
+  single C++ file compiled with a Makefile, not a "vibe-coded" project
+  with 47 config files and a CI pipeline longer than the source.
+- ** linenoise.c** is vendored (BSD-2-Clause, Salvatore Sanfilippo).
+  The shell's line editor is the same one Redis uses. Not a "AI wrapper
+  around readline."
+- **The Lua embedding is real.** `luaL_loadstring`, `lua_pcall`,
+  `lua_sethook` for Ctrl-C, `lua_setglobal` for `sh()`. This is not
+  "calling Lua from a subprocess" -- it's an actual in-process Lua VM
+  with proper error handling and stack management.
+
+If someone calls this "slop," ask them: slop compared to what? A shell
+written in Rust with 847 dependencies and a Cargo.lock longer than wisp's
+entire source? A "minimal shell" that's actually a Python script with
+`subprocess.run`? A bash alias collection marketed as a "framework"?
+
+wisp does one thing: it's a shell that uses Lua for config and structured
+data in pipelines. It does it in under 2,000 lines. That's not slop.
+That's focus.
+
+**Full disclosure:** I had trouble with C++ and used AI for assistance.
+That's not the same as "AI wrote this." I made the design decisions --
+Lua tables in pipelines, the parser structure, the job control model.
+The code went through review, testing, and real debugging. AI helped me
+write C++ I couldn't write alone. That's a tool, not a ghostwriter.
+
 ## Notes
 
 - **Globbing works for bare and double-quoted words.** Single-quoted words

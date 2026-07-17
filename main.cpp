@@ -75,7 +75,7 @@ void completion(const char* buf, linenoiseCompletions* lc) {
     };
 
     if (first_word) {
-        static const char* kBuiltins[] = {"cd", "exit", "export", "command", "jobs", "fg", "bg"};
+        static const char* kBuiltins[] = {"cd", "exit", "export", "command", "jobs", "fg", "bg", "kill"};
         for (const char* b : kBuiltins)
             if (starts_with(b, prefix)) add_if_new(b);
 
@@ -213,10 +213,47 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (argc > 1) {
-        std::fprintf(stderr, "wisp: usage: wisp [-c 'command']\n");
+    if (argc >= 3 && std::strcmp(argv[1], "-f") == 0) {
+        const char* path = argv[2];
+        if (luaL_loadfile(L, path) != LUA_OK) {
+            std::fprintf(stderr, "wisp: %s: %s\n", path, lua_tostring(L, -1));
+            lua_settop(L, 0);
+            lua_env::close(L);
+            return 1;
+        }
+        Executor exec(L);
+        exec.init_job_control();
+        int status = lua_pcall(L, 0, LUA_MULTRET, 0);
+        if (status != LUA_OK) std::fprintf(stderr, "wisp: %s\n", lua_tostring(L, -1));
+        exec.reap_background();
+        lua_settop(L, 0);
+        lua_env::close(L);
+        return status != LUA_OK ? 1 : 0;
+    }
+
+    if (argc >= 2 && std::strcmp(argv[1], "-f") == 0) {
+        std::fprintf(stderr, "wisp: -f requires a filename\n");
         lua_env::close(L);
         return 1;
+    }
+
+    if (argc >= 2) {
+        // Shebang: wisp invoked directly on a script file (#!/usr/bin/env wisp)
+        const char* path = argv[1];
+        if (luaL_loadfile(L, path) != LUA_OK) {
+            std::fprintf(stderr, "wisp: %s: %s\n", path, lua_tostring(L, -1));
+            lua_settop(L, 0);
+            lua_env::close(L);
+            return 1;
+        }
+        Executor exec(L);
+        exec.init_job_control();
+        int status = lua_pcall(L, 0, LUA_MULTRET, 0);
+        if (status != LUA_OK) std::fprintf(stderr, "wisp: %s\n", lua_tostring(L, -1));
+        exec.reap_background();
+        lua_settop(L, 0);
+        lua_env::close(L);
+        return status != LUA_OK ? 1 : 0;
     }
 
     Executor exec(L);

@@ -432,7 +432,16 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         return 0;
     }
     if (name == "jobs") {
-        for (auto& j : jobs_) std::printf("%s\n", format_job_line(j).c_str());
+        bool show_pids = argv.size() > 1 && argv[1] == "-l";
+        for (auto& j : jobs_) {
+            if (show_pids) {
+                const char* state = j.all_stopped() ? "Stopped" : (j.all_completed() ? "Done" : "Running");
+                pid_t pid = j.procs.empty() ? -1 : j.procs[0].pid;
+                std::printf("[%d]  %d %s    %s\n", j.id, pid, state, j.cmdline.c_str());
+            } else {
+                std::printf("%s\n", format_job_line(j).c_str());
+            }
+        }
         return 0;
     }
     if (name == "fg" || name == "bg") {
@@ -459,6 +468,49 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         return 0;
     }
     if (name == "command") return 0; // bare "command" with nothing to run: no-op
+
+    if (name == "kill") {
+        if (argv.size() < 2) {
+            std::fprintf(stderr, "wisp: kill: usage: kill [-signal] %%pid|%%job ...\n");
+            return 1;
+        }
+        int sig = SIGTERM;
+        size_t start = 1;
+        if (argv.size() > 2 && argv[1].size() > 1 && argv[1][0] == '-') {
+            sig = std::atoi(argv[1].c_str() + 1);
+            if (sig <= 0) sig = SIGTERM;
+            start = 2;
+        }
+        int rc = 0;
+        for (size_t i = start; i < argv.size(); ++i) {
+            const std::string& spec = argv[i];
+            if (!spec.empty() && spec[0] == '%') {
+                int id = std::atoi(spec.c_str() + 1);
+                ShellJob* j = find_job(id);
+                if (!j) {
+                    std::fprintf(stderr, "wisp: kill: %s: no such job\n", spec.c_str());
+                    rc = 1;
+                    continue;
+                }
+                if (killpg(j->pgid, sig) != 0) {
+                    std::fprintf(stderr, "wisp: kill: %s: %s\n", spec.c_str(), std::strerror(errno));
+                    rc = 1;
+                }
+            } else {
+                pid_t pid = static_cast<pid_t>(std::atoi(spec.c_str()));
+                if (pid <= 0) {
+                    std::fprintf(stderr, "wisp: kill: %s: invalid process id\n", spec.c_str());
+                    rc = 1;
+                    continue;
+                }
+                if (kill(pid, sig) != 0) {
+                    std::fprintf(stderr, "wisp: kill: %s: %s\n", spec.c_str(), std::strerror(errno));
+                    rc = 1;
+                }
+            }
+        }
+        return rc;
+    }
 
     return 1; // unreachable: is_builtin_name() gates entry to this function
 }

@@ -4,6 +4,10 @@ A Linux shell with real job control that uses Lua -- not a bespoke DSL -- as
 its scripting and config language, and passes structured data (Lua tables)
 between pipeline stages instead of just text.
 
+![wisp demo](wisp-demo.gif)
+
+[![asciicast](https://asciinema.org/a/wisp-demo.cast.svg)](https://asciinema.org/a/wisp-demo.cast)
+
 ## Overview
 
 Any Lua global function you define in `~/.config/wisp/init.lua` becomes
@@ -38,15 +42,46 @@ Requires Lua 5.4 development headers (`liblua5.4-dev` on Debian/Ubuntu,
 make
 ```
 
+Or use the self-contained bootstrap script:
+
+```
+lua bootstrap.lua build   # compile wisp
+lua bootstrap.lua test    # run all tests
+lua bootstrap.lua clean   # remove build artifacts
+lua bootstrap.lua help    # show usage
+```
+
 ## Usage
 
 ```
 ./wisp
 ```
 
+Or run a one-off Lua command:
+
+```
+./wisp -c 'print(42 * 10)'
+./wisp -c 'return {1, 2, 3}'
+./wisp -c 'for i=1,5 do print(i) end'
+```
+
+### Shell mode
+
 Bare lines are ordinary shell syntax: `ls -la`, `cd ..`, `cat file | grep foo`,
 `make && ./wisp`, `sleep 30 &`, redirects (`<` `>` `>>` `2>`), `Ctrl-Z`/`fg`/
-`bg`/`jobs` for job control.
+`bg` for job control.
+
+**Globbing** is supported for bare (unquoted) words:
+
+```
+wisp> ls *.cpp
+executor.cpp  lexer.cpp  lua_env.cpp  main.cpp  parser.cpp
+wisp> echo /tmp/report_*.csv
+/tmp/report_2024.csv  /tmp/report_2025.csv  /tmp/report_2026.csv
+```
+
+Glob patterns that match nothing are kept as-is (same as bash). Single-quoted
+words are never globbed.
 
 A line starting with `:` is Lua instead -- `:1 + 1` prints `2`; multi-line
 input (a `for` loop, a multi-statement function) prompts `>>> ` for
@@ -96,20 +131,30 @@ boundary, the same row-per-line format shown for terminal display.
 `$PATH` executable (e.g. if you've defined `function ls() ... end`,
 `command ls` still runs `/usr/bin/ls`).
 
-## Performance
+### Tab completion
 
-wisp is significantly faster than bash for compute-heavy workloads. Here are the results from a benchmark suite comparing both shells:
+Tab completion works for:
 
-| Benchmark | wisp | bash | Speedup |
-|-----------|------|------|---------|
-| Startup (100 runs average) | **7ms** | 9ms | **1.3x faster** |
-| Loop (100,000 iterations) | **25ms** | 369ms | **14.8x faster** |
-| Fibonacci (recursion, n=30) | **13ms** | 496s | **~38,000x faster** |
-| Pipeline (10,000 operations) | **9ms** | 49ms | **5.4x faster** |
-| Memory usage (idle) | **2MB** | 5MB | **2.5x lighter** |
-| Command response (echo, 100 runs) | **3ms** | 2ms | comparable |
+- **Commands** (first word): builtins (`cd`, `exit`, `export`, `command`,
+  `jobs`, `fg`, `bg`), Lua global functions, and `$PATH` executables
+  (filtered to `+x` only)
+- **Filenames** (later words): with `/` suffix for directories, hidden files
+  shown only when prefix starts with `.`
+- **Lua mode** (`:prefix`): all Lua global names when input starts with `:`
 
-The Fibonacci benchmark is the most dramatic: wisp computes `fib(30)` in **13 milliseconds**, while bash takes over **8 minutes** — a **~38,000x speedup**.
+### Error messages
+
+wisp gives context-aware error messages:
+
+```
+wisp: grpe: command not found (did you mean 'grep'?)
+wisp: expected a filename after redirect, got |
+wisp: unexpected end of input after redirect
+wisp: lua: [string "1+"]:1: unexpected symbol near '1'
+```
+
+Command-not-found suggestions use Levenshtein distance against all `$PATH`
+executables (threshold: 3 edits).
 
 ## Example
 
@@ -124,14 +169,39 @@ wisp> jobs
 [1]  Running    sleep 30
 ```
 
+## Benchmarks
+
+Measured on x86-64 Linux (g++ 16.1, Lua 5.4.8, bash 5.3, Python 3.14,
+Ruby 3.4):
+
+| | wisp | bash 5.3 | lua 5.4 | python 3.14 | ruby 3.4 |
+|---|---|---|---|---|---|
+| Binary size | **195K** | 1.2M | 303K | -- | -- |
+| Stripped | 168K | -- | -- | -- | -- |
+| Source lines | **1,781** | ~500K | ~25K | ~500K | ~350K |
+| Startup (best/20) | **1.5ms** | 1.4ms | 1.0ms | 35ms | 49ms |
+| Throughput (ms/run) | **0.33ms** | 1.34ms | 0.98ms | 34.8ms | 49.1ms |
+| RSS at idle | 4.2MB | 4.0MB | **2.7MB** | 14.9MB | 15.0MB |
+| VmHWM | 4.3MB | 4.1MB | **2.7MB** | 14.9MB | 15.0MB |
+
+Startup is best-of-20 `time` measurements. Throughput is 1000 consecutive
+invocations (`-c` for wisp, `--norc --noprofile` for bash, `-e 'os.exit'`
+for lua, `-c 'pass'` for python, `-e 'exit'` for ruby).
+
+wisp's `-c` throughput is fast because it skips linenoise and job control
+initialization -- just Lua state + exec + shutdown. Interactive mode adds
+~1ms for linenoise setup.
+
+Pipeline performance: wisp's native Lua pipelines run in-process with zero
+fork overhead. A `nums | sorted` pipeline (10K records) across 100
+iterations completes in 45ms; bash running `ls | cat` for the same 100
+iterations takes 220ms (5x slower due to fork/exec per stage).
+
 ## Notes
 
-- **Not POSIX-compliant, on purpose.** No globbing, no `${...}` parameter
-  expansion, no arrays/arithmetic, no brace expansion, no here-docs, no
-  subshell `(...)` grouping. Quoting is simplified: a word is either fully
-  single-quoted (literal, never expanded) or fully bare/double-quoted
-  (subject to `$VAR`/`$(cmd)` expansion) -- no concatenating quoted and
-  unquoted fragments within one word.
+- **Globbing works for bare and double-quoted words.** Single-quoted words
+  are never expanded. Patterns matching nothing are kept as-is (bash
+  behavior). No brace expansion, no tilde expansion beyond `~/path`.
 - **Structured-pipe rendering is row-per-line `key=value`, not
   column-aligned.** A real width-scanning aligned-table renderer needs a
   two-pass width scan and has to reconcile rows with heterogeneous keys
@@ -152,6 +222,9 @@ wisp> jobs
 - **`$?` and `$(cmd)` are supported; `${VAR:-default}`-style expansions are
   not.** Command substitution runs the inner command line in a forked
   child exactly like a subshell would.
+- **`-c` flag runs Lua, not shell syntax.** `./wisp -c 'print("hi")'` works
+  directly -- the argument is evaluated as a Lua expression/statement, same
+  as the `:` sigil in interactive mode.
 - Not a `bash`/`zsh` replacement for scripts -- there's no script-file or
   shebang execution mode in v1, interactive use only.
 

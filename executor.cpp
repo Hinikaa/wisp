@@ -1,13 +1,17 @@
 #include "executor.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <exception>
 #include <fcntl.h>
+#include <glob.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -75,6 +79,77 @@ namespace {
 // installing it permanently would tax every VM instruction for no benefit
 // the rest of the time.
 lua_State* g_interrupt_L = nullptr;
+
+int levenshtein(const std::string& a, const std::string& b) {
+    int m = static_cast<int>(a.size()), n = static_cast<int>(b.size());
+    std::vector<int> prev(n + 1), curr(n + 1);
+    for (int j = 0; j <= n; ++j) prev[j] = j;
+    for (int i = 1; i <= m; ++i) {
+        curr[0] = i;
+        for (int j = 1; j <= n; ++j) {
+            int cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost});
+        }
+        prev.swap(curr);
+    }
+    return prev[n];
+}
+
+bool has_glob_chars(const std::string& s) {
+    bool in_bracket = false;
+    for (char c : s) {
+        if (c == '[') { in_bracket = true; continue; }
+        if (c == ']') { in_bracket = false; continue; }
+        if (!in_bracket && (c == '*' || c == '?')) return true;
+    }
+    return false;
+}
+
+std::vector<std::string> glob_expand(const std::string& pattern) {
+    glob_t results{};
+    int flags = GLOB_NOCHECK | GLOB_NOMAGIC;
+    if (glob(pattern.c_str(), flags, nullptr, &results) != 0 || results.gl_pathc == 0) {
+        globfree(&results);
+        return {pattern};
+    }
+    std::vector<std::string> out;
+    out.reserve(results.gl_pathc);
+    for (size_t i = 0; i < results.gl_pathc; ++i)
+        out.emplace_back(results.gl_pathv[i]);
+    globfree(&results);
+    return out;
+}
+
+std::string find_similar_command(const std::string& name, int threshold) {
+    const char* path_env = std::getenv("PATH");
+    if (!path_env) return "";
+    std::string path(path_env);
+    std::string best;
+    int best_dist = threshold + 1;
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t colon = path.find(':', start);
+        std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        if (dir.empty()) dir = ".";
+        DIR* d = opendir(dir.c_str());
+        if (d) {
+            struct dirent* ent;
+            while ((ent = readdir(d)) != nullptr) {
+                std::string candidate = ent->d_name;
+                if (candidate == "." || candidate == "..") continue;
+                std::string full = dir + "/" + candidate;
+                struct stat st{};
+                if (stat(full.c_str(), &st) != 0 || !(st.st_mode & S_IXUSR)) continue;
+                int dist = levenshtein(name, candidate);
+                if (dist < best_dist) { best_dist = dist; best = candidate; }
+            }
+            closedir(d);
+        }
+        if (colon == std::string::npos) break;
+        start = colon + 1;
+    }
+    return best_dist <= threshold ? best : "";
+}
 
 void wisp_sigint_hook(lua_State* L, lua_Debug*) {
     lua_sethook(L, nullptr, 0, 0);
@@ -240,6 +315,16 @@ std::string Executor::expand_word(const Word& w) {
     return out;
 }
 
+std::vector<std::string> Executor::expand_words(const Word& w) {
+    std::string expanded = expand_word(w);
+    if (w.literal) return {expanded};
+    if (has_glob_chars(expanded)) {
+        auto matches = glob_expand(expanded);
+        if (!matches.empty()) return matches;
+    }
+    return {expanded};
+}
+
 std::string Executor::run_command_substitution(const std::string& inner) {
     int pipefd[2];
     if (pipe(pipefd) != 0) return "";
@@ -280,7 +365,10 @@ std::vector<ExpCmd> Executor::expand_and_classify(const Pipeline& pl) {
     for (auto& c : pl.commands) {
         ExpCmd ec;
         ec.argv.reserve(c.argv.size());
-        for (auto& w : c.argv) ec.argv.push_back(expand_word(w));
+        for (auto& w : c.argv) {
+            auto expanded = expand_words(w);
+            ec.argv.insert(ec.argv.end(), expanded.begin(), expanded.end());
+        }
         ec.redirects = c.redirects;
 
         if (!ec.argv.empty() && ec.argv[0] == "command" && ec.argv.size() > 1) {
@@ -593,8 +681,14 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
             for (auto& a : ec.argv) argv_c.push_back(const_cast<char*>(a.c_str()));
             argv_c.push_back(nullptr);
             execvp(argv_c[0], argv_c.data());
-            if (errno == ENOENT) std::fprintf(stderr, "wisp: %s: command not found\n", ec.argv[0].c_str());
-            else std::fprintf(stderr, "wisp: %s: %s\n", ec.argv[0].c_str(), std::strerror(errno));
+            if (errno == ENOENT) {
+                std::fprintf(stderr, "wisp: %s: command not found", ec.argv[0].c_str());
+                std::string hint = find_similar_command(ec.argv[0], 3);
+                if (!hint.empty()) std::fprintf(stderr, " (did you mean '%s'?)", hint.c_str());
+                std::fputc('\n', stderr);
+            } else {
+                std::fprintf(stderr, "wisp: %s: %s\n", ec.argv[0].c_str(), std::strerror(errno));
+            }
             _exit(127);
         }
 

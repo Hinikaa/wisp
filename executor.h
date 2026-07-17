@@ -80,6 +80,7 @@ private:
     int run_pipeline(const Pipeline& pl, bool background, const std::string& cmdline_text);
 
     std::string expand_word(const Word& w);
+    std::vector<std::string> expand_words(const Word& w);
     std::string run_command_substitution(const std::string& inner);
 
     std::vector<ExpCmd> expand_and_classify(const Pipeline& pl);

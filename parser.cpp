@@ -32,6 +32,23 @@ bool is_redirect_tok(TokType t) {
     return t == TokType::Less || t == TokType::Great || t == TokType::DGreat || t == TokType::ErrGreat;
 }
 
+const char* tok_type_name(TokType t) {
+    switch (t) {
+        case TokType::Pipe: return "|";
+        case TokType::Less: return "<";
+        case TokType::Great: return ">";
+        case TokType::DGreat: return ">>";
+        case TokType::ErrGreat: return "2>";
+        case TokType::AndAnd: return "&&";
+        case TokType::OrOr: return "||";
+        case TokType::Semi: return ";";
+        case TokType::Amp: return "&";
+        case TokType::End: return "end of input";
+        case TokType::Word: return ""; // handled separately
+    }
+    return "";
+}
+
 Command parse_command(Cursor& c) {
     Command cmd;
     while (true) {
@@ -42,8 +59,11 @@ Command parse_command(Cursor& c) {
         } else if (is_redirect_tok(t)) {
             RedirKind kind = redir_kind_for(t);
             c.advance();
-            if (c.peek().type != TokType::Word)
-                throw std::runtime_error("wisp: expected a filename after redirect");
+            if (c.peek().type != TokType::Word) {
+                if (c.peek().type == TokType::End)
+                    throw std::runtime_error("wisp: unexpected end of input after redirect");
+                throw std::runtime_error(std::string("wisp: expected a filename after redirect, got ") + tok_type_name(c.peek().type));
+            }
             const Token& target = c.advance();
             cmd.redirects.push_back(Redirect{kind, Word{target.text, target.literal}});
         } else {

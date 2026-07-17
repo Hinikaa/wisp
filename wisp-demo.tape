@@ -51,7 +51,17 @@ Sleep 0.3
 Enter
 Sleep 1
 
-Type "ls | head -5"
+Type "sleep 30 &"
+Sleep 0.3
+Enter
+Sleep 0.8
+
+Type "jobs -l"
+Sleep 0.3
+Enter
+Sleep 0.8
+
+Type "kill %1"
 Sleep 0.3
 Enter
 Sleep 0.8

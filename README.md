@@ -217,7 +217,7 @@ iterations takes 220ms (5x slower due to fork/exec per stage).
 Not everyone needs bash. Here's where wisp sits relative to the alternatives
 people actually use.
 
-| Feature | wisp v1.2 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
+| Feature | wisp v1.3 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
 |---|---|---|---|---|---|---|
 | Interactive REPL | yes | yes | no | yes | yes | yes |
 | Job control (fg/bg) | yes | yes | no | yes | partial | no |
@@ -235,7 +235,7 @@ people actually use.
 | Binary size | **195K** | 1.2M | ~100K | ~1M | ~15M | ~200M+ |
 | Source lines | **1,781** | ~500K | ~20K | ~250K | ~100K | millions |
 
-### What wisp v1.1 can do
+### What wisp v1.3 can do
 
 - Run any shell command: `ls`, `grep -r src/`, `make && make install`
 - Redirects: `<`, `>`, `>>`, `2>`
@@ -254,7 +254,7 @@ people actually use.
 - `echo -n` (no newline) and `echo -e` (escape sequences: `\n`, `\t`, `\\`)
 - Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
 
-### What wisp v1.1 can't do (yet)
+### What wisp v1.3 can't do (yet)
 
 - No brace expansion: `{a,b,c}` stays literal
 - No array syntax: `arr=(1 2 3)` doesn't exist

@@ -151,8 +151,8 @@ boundary, the same row-per-line format shown for terminal display.
 Tab completion works for:
 
 - **Commands** (first word): builtins (`cd`, `exit`, `export`, `command`,
-  `jobs`, `fg`, `bg`, `kill`), Lua global functions, and `$PATH` executables
-  (filtered to `+x` only)
+  `jobs`, `fg`, `bg`, `kill`, `source`, `echo`), Lua global functions, and
+  `$PATH` executables (filtered to `+x` only)
 - **Filenames** (later words): with `/` suffix for directories, hidden files
   shown only when prefix starts with `.`
 - **Lua mode** (`:prefix`): all Lua global names when input starts with `:`
@@ -229,7 +229,7 @@ people actually use.
 | Script execution | `-c`/`-f` | full | full | full | full | full |
 | Shebang support | yes | yes | yes | yes | yes | no |
 | `$?` / `$(cmd)` | yes | yes | yes | `$status` | `$env:` | `$LASTEXITCODE` |
-| `${VAR:-default}` | no | yes | yes | yes | yes | no |
+| `${VAR:-default}` | yes | yes | yes | yes | yes | no |
 | Brace expansion | no | yes | no | yes | yes | no |
 | External command not-found | **Levenshtein hint** | no | no | no | no | no |
 | Binary size | **195K** | 1.2M | ~100K | ~1M | ~15M | ~200M+ |
@@ -241,7 +241,7 @@ people actually use.
 - Redirects: `<`, `>`, `>>`, `2>`
 - Background jobs: `sleep 30 &` then `jobs`, `fg %1`, `bg %1`
 - Kill background jobs: `kill %1`, `kill -9 %1`
-- `$?`, `$(cmd)`, `$VAR` expansion
+- `$?`, `$(cmd)`, `$VAR`, `${VAR:-default}` expansion
 - Glob patterns: `*.cpp`, `src/**/*.h`
 - Tab completion: commands, filenames, Lua functions
 - Lua one-liners: `:1 + 1`, `:print("hi")`
@@ -249,16 +249,17 @@ people actually use.
 - Structured pipelines: `nums | sorted | wc -l` passes Lua tables between stages
 - One-off commands: `./wisp -c 'return {1, 2, 3}'`
 - Script execution: `./wisp -f script.lua` or shebang `#!/usr/bin/env wisp`
+- `cd -` to go to previous directory
+- `source file.lua` to load Lua files at runtime
+- `echo -n` (no newline) and `echo -e` (escape sequences: `\n`, `\t`, `\\`)
 - Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
 
 ### What wisp v1.1 can't do (yet)
 
-- No script-file execution from a `.wisp` file (no `./script.wisp`)
-- No shebang from a file directly (only `-c` and `-f` flags)
-- No `${VAR:-default}` or `${!prefix*}` expansions
 - No brace expansion: `{a,b,c}` stays literal
 - No array syntax: `arr=(1 2 3)` doesn't exist
 - No `[[ ]]` double-bracket tests
+- No `${!prefix*}` or `${VAR+alternative}` expansions
 - `-c` runs Lua, not shell syntax (by design, not a limitation)
 
 ### What other shells can't do
@@ -340,14 +341,22 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
   long-running pure-C++ builtin with no Lua call inside it is not
   interruptible this way -- an unsolved v1 edge case, not silently papered
   over.
-- **`$?` and `$(cmd)` are supported; `${VAR:-default}`-style expansions are
-  not.** Command substitution runs the inner command line in a forked
-  child exactly like a subshell would.
+- **`$?`, `$(cmd)`, `$VAR`, and `${VAR:-default}` are supported.** Command
+  substitution runs the inner command line in a forked child exactly like a
+  subshell would. `${VAR:-default}` uses the default value if VAR is unset
+  or empty.
 - **`-c` flag runs Lua, not shell syntax.** `./wisp -c 'print("hi")'` works
   directly -- the argument is evaluated as a Lua expression/statement, same
   as the `:` sigil in interactive mode. Use `-f` for script files.
 - **`kill %N` sends SIGTERM** to background job process groups. `jobs -l`
   shows PIDs. Standard job control, nothing exotic.
+- **`cd -`** goes to the previous directory (like bash). Tracks the last
+  `cd` destination automatically.
+- **`source file.lua`** loads and executes a Lua file at runtime. Useful
+  for loading function libraries or runtime config.
+- **`echo -n`** suppresses trailing newline. **`echo -e`** processes escape
+  sequences (`\n`, `\t`, `\\`). Plain `echo` with no flags works as
+  expected.
 
 ## License
 

@@ -307,6 +307,21 @@ std::string Executor::expand_word(const Word& w) {
             const char* val = std::getenv(in.substr(i + 1, j - (i + 1)).c_str());
             out += val ? val : "";
             i = j;
+        } else if (next == '{' && i + 2 < in.size()) {
+            size_t close = in.find('}', i + 2);
+            if (close == std::string::npos) { out += c; ++i; continue; }
+            std::string inner = in.substr(i + 2, close - i - 2);
+            std::string varname, defval;
+            size_t dash = inner.find(":-");
+            if (dash != std::string::npos) {
+                varname = inner.substr(0, dash);
+                defval = inner.substr(dash + 2);
+            } else {
+                varname = inner;
+            }
+            const char* val = varname.empty() ? nullptr : std::getenv(varname.c_str());
+            out += (val && val[0]) ? val : defval;
+            i = close + 1;
         } else {
             out += c;
             ++i;
@@ -414,6 +429,15 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         std::string target;
         if (argv.size() > 1) target = argv[1];
         else { const char* home = std::getenv("HOME"); target = home ? home : "/"; }
+        if (target == "-") {
+            if (prev_dir_.empty()) {
+                std::fprintf(stderr, "wisp: cd: OLDPWD not set\n");
+                return 1;
+            }
+            target = prev_dir_;
+        }
+        char cwd[1024];
+        if (getcwd(cwd, sizeof cwd)) prev_dir_ = cwd;
         if (chdir(target.c_str()) != 0) {
             std::fprintf(stderr, "wisp: cd: %s: %s\n", target.c_str(), std::strerror(errno));
             return 1;
@@ -510,6 +534,57 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
             }
         }
         return rc;
+    }
+
+    if (name == "echo") {
+        bool newline = true;
+        bool process_escape = false;
+        size_t start = 1;
+        if (start < argv.size() && argv[start] == "-n") {
+            newline = false;
+            ++start;
+        }
+        if (start < argv.size() && argv[start] == "-e") {
+            process_escape = true;
+            ++start;
+        }
+        for (size_t i = start; i < argv.size(); ++i) {
+            if (i > start) std::fputc(' ', stdout);
+            if (process_escape) {
+                for (size_t j = 0; j < argv[i].size(); ++j) {
+                    char c = argv[i][j];
+                    if (c == '\\' && j + 1 < argv[i].size()) {
+                        char next = argv[i][j + 1];
+                        if (next == 'n') { std::fputc('\n', stdout); ++j; continue; }
+                        if (next == 't') { std::fputc('\t', stdout); ++j; continue; }
+                        if (next == '\\') { std::fputc('\\', stdout); ++j; continue; }
+                    }
+                    std::fputc(c, stdout);
+                }
+            } else {
+                std::fputs(argv[i].c_str(), stdout);
+            }
+        }
+        if (newline) std::fputc('\n', stdout);
+        return 0;
+    }
+
+    if (name == "source") {
+        if (argv.size() < 2) {
+            std::fprintf(stderr, "wisp: source: usage: source <file.lua>\n");
+            return 1;
+        }
+        if (luaL_loadfile(L_, argv[1].c_str()) != LUA_OK) {
+            std::fprintf(stderr, "wisp: source: %s: %s\n", argv[1].c_str(), lua_tostring(L_, -1));
+            lua_pop(L_, 1);
+            return 1;
+        }
+        if (lua_pcall(L_, 0, LUA_MULTRET, 0) != LUA_OK) {
+            std::fprintf(stderr, "wisp: source: %s\n", lua_tostring(L_, -1));
+            lua_pop(L_, 1);
+            return 1;
+        }
+        return 0;
     }
 
     return 1; // unreachable: is_builtin_name() gates entry to this function

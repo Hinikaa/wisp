@@ -102,4 +102,5 @@ private:
     std::vector<ShellJob> jobs_;
     int next_job_id_ = 1;
     int last_status_ = 0;
+    std::string prev_dir_;
 };

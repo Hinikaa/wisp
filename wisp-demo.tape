@@ -51,20 +51,30 @@ Sleep 0.3
 Enter
 Sleep 1
 
-Type "sleep 30 &"
+Type "cd /tmp"
 Sleep 0.3
 Enter
-Sleep 0.8
+Sleep 0.5
 
-Type "jobs -l"
+Type "cd -"
 Sleep 0.3
 Enter
-Sleep 0.8
+Sleep 0.5
 
-Type "kill %1"
+Type "pwd"
 Sleep 0.3
 Enter
-Sleep 0.8
+Sleep 0.5
+
+Type "echo -n one two"
+Sleep 0.3
+Enter
+Sleep 0.5
+
+Type "echo -e 'line1\\nline2'"
+Sleep 0.3
+Enter
+Sleep 0.5
 
 Type "exit"
 Sleep 0.3

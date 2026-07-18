@@ -217,7 +217,7 @@ iterations takes 220ms (5x slower due to fork/exec per stage).
 Not everyone needs bash. Here's where wisp sits relative to the alternatives
 people actually use.
 
-| Feature | wisp v1.1 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
+| Feature | wisp v1.2 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
 |---|---|---|---|---|---|---|
 | Interactive REPL | yes | yes | no | yes | yes | yes |
 | Job control (fg/bg) | yes | yes | no | yes | partial | no |

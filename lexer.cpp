@@ -82,7 +82,13 @@ std::vector<Token> lex(const std::string& line) {
         // immediately follows with zero gap.
         if (text == "2" && pos < n && line[pos] == '>') {
             ++pos;
-            out.push_back({TokType::ErrGreat, "", false});
+            // check for "2>&1"
+            if (pos < n && line[pos] == '&' && pos + 1 < n && line[pos + 1] == '1') {
+                pos += 2;
+                out.push_back({TokType::ErrToOut, "", false});
+            } else {
+                out.push_back({TokType::ErrGreat, "", false});
+            }
             continue;
         }
 

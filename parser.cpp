@@ -24,12 +24,13 @@ RedirKind redir_kind_for(TokType t) {
         case TokType::Great: return RedirKind::Out;
         case TokType::DGreat: return RedirKind::Append;
         case TokType::ErrGreat: return RedirKind::ErrOut;
+        case TokType::ErrToOut: return RedirKind::ErrToOut;
         default: throw std::runtime_error("wisp: internal error: not a redirect token");
     }
 }
 
 bool is_redirect_tok(TokType t) {
-    return t == TokType::Less || t == TokType::Great || t == TokType::DGreat || t == TokType::ErrGreat;
+    return t == TokType::Less || t == TokType::Great || t == TokType::DGreat || t == TokType::ErrGreat || t == TokType::ErrToOut;
 }
 
 const char* tok_type_name(TokType t) {
@@ -39,6 +40,7 @@ const char* tok_type_name(TokType t) {
         case TokType::Great: return ">";
         case TokType::DGreat: return ">>";
         case TokType::ErrGreat: return "2>";
+        case TokType::ErrToOut: return "2>&1";
         case TokType::AndAnd: return "&&";
         case TokType::OrOr: return "||";
         case TokType::Semi: return ";";
@@ -59,13 +61,17 @@ Command parse_command(Cursor& c) {
         } else if (is_redirect_tok(t)) {
             RedirKind kind = redir_kind_for(t);
             c.advance();
-            if (c.peek().type != TokType::Word) {
-                if (c.peek().type == TokType::End)
-                    throw std::runtime_error("wisp: unexpected end of input after redirect");
-                throw std::runtime_error(std::string("wisp: expected a filename after redirect, got ") + tok_type_name(c.peek().type));
+            if (kind == RedirKind::ErrToOut) {
+                cmd.redirects.push_back(Redirect{kind, Word{""}});
+            } else {
+                if (c.peek().type != TokType::Word) {
+                    if (c.peek().type == TokType::End)
+                        throw std::runtime_error("wisp: unexpected end of input after redirect");
+                    throw std::runtime_error(std::string("wisp: expected a filename after redirect, got ") + tok_type_name(c.peek().type));
+                }
+                const Token& target = c.advance();
+                cmd.redirects.push_back(Redirect{kind, Word{target.text, target.literal}});
             }
-            const Token& target = c.advance();
-            cmd.redirects.push_back(Redirect{kind, Word{target.text, target.literal}});
         } else {
             break;
         }

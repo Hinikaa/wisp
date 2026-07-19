@@ -7,7 +7,7 @@
 // at execution time in executor.cpp, since $(cmd) requires actually running
 // something and this module must stay pure (testable on a plain string).
 enum class TokType {
-    Word, Pipe, Less, Great, DGreat, ErrGreat, AndAnd, OrOr, Semi, Amp, End
+    Word, Pipe, Less, Great, DGreat, ErrGreat, ErrToOut, AndAnd, OrOr, Semi, Amp, End
 };
 
 struct Token {

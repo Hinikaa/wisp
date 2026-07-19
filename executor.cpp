@@ -1,5 +1,7 @@
 #include "executor.h"
 
+#include "builtins.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -93,6 +95,50 @@ int levenshtein(const std::string& a, const std::string& b) {
         prev.swap(curr);
     }
     return prev[n];
+}
+
+std::vector<std::string> brace_expand(const std::string& s) {
+    // find first unescaped '{' followed by content and '}'
+    size_t open = std::string::npos;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '{') { open = i; break; }
+    }
+    if (open == std::string::npos) return {s};
+
+    size_t close = std::string::npos;
+    int depth = 1;
+    for (size_t i = open + 1; i < s.size(); ++i) {
+        if (s[i] == '{') ++depth;
+        else if (s[i] == '}') { --depth; if (depth == 0) { close = i; break; } }
+    }
+    if (close == std::string::npos) return {s};
+
+    std::string before = s.substr(0, open);
+    std::string inner = s.substr(open + 1, close - open - 1);
+    std::string after = s.substr(close + 1);
+
+    // split on commas at depth 0
+    std::vector<std::string> items;
+    std::string current;
+    int d = 0;
+    for (char c : inner) {
+        if (c == '{') ++d;
+        else if (c == '}') --d;
+        if (c == ',' && d == 0) {
+            items.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    items.push_back(current);
+
+    std::vector<std::string> result;
+    for (auto& item : items) {
+        auto expanded = brace_expand(before + item + after);
+        result.insert(result.end(), expanded.begin(), expanded.end());
+    }
+    return result;
 }
 
 bool has_glob_chars(const std::string& s) {
@@ -333,11 +379,21 @@ std::string Executor::expand_word(const Word& w) {
 std::vector<std::string> Executor::expand_words(const Word& w) {
     std::string expanded = expand_word(w);
     if (w.literal) return {expanded};
-    if (has_glob_chars(expanded)) {
-        auto matches = glob_expand(expanded);
-        if (!matches.empty()) return matches;
+
+    // brace expansion first
+    auto braced = brace_expand(expanded);
+
+    // then glob expansion on each result
+    std::vector<std::string> result;
+    for (auto& s : braced) {
+        if (has_glob_chars(s)) {
+            auto matches = glob_expand(s);
+            result.insert(result.end(), matches.begin(), matches.end());
+        } else {
+            result.push_back(s);
+        }
     }
-    return {expanded};
+    return result;
 }
 
 std::string Executor::run_command_substitution(const std::string& inner) {
@@ -587,6 +643,97 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         return 0;
     }
 
+    if (name == "disown") {
+        if (argv.size() < 2) {
+            std::fprintf(stderr, "wisp: disown: usage: disown <%%job>\n");
+            return 1;
+        }
+        std::string spec = argv[1];
+        if (!spec.empty() && spec[0] == '%') spec = spec.substr(1);
+        int id = std::atoi(spec.c_str());
+        for (size_t i = 0; i < jobs_.size(); ++i) {
+            if (jobs_[i].id == id) {
+                jobs_.erase(jobs_.begin() + static_cast<long>(i));
+                return 0;
+            }
+        }
+        std::fprintf(stderr, "wisp: disown: %s: no such job\n", argv[1].c_str());
+        return 1;
+    }
+
+    if (name == "wait") {
+        if (argv.size() < 2) {
+            // wait for all background jobs
+            for (auto& j : jobs_) {
+                if (!j.all_completed()) wait_for_job(j);
+            }
+            return 0;
+        }
+        std::string spec = argv[1];
+        if (!spec.empty() && spec[0] == '%') spec = spec.substr(1);
+        int id = std::atoi(spec.c_str());
+        ShellJob* j = find_job(id);
+        if (!j) {
+            std::fprintf(stderr, "wisp: wait: %s: no such job\n", argv[1].c_str());
+            return 1;
+        }
+        wait_for_job(*j);
+        return 0;
+    }
+
+    if (name == "pwd") {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof cwd)) {
+            std::fputs(cwd, stdout);
+            std::fputc('\n', stdout);
+            return 0;
+        }
+        std::fprintf(stderr, "wisp: pwd: %s\n", std::strerror(errno));
+        return 1;
+    }
+
+    if (name == "type") {
+        if (argv.size() < 2) {
+            std::fprintf(stderr, "wisp: type: usage: type <command>\n");
+            return 1;
+        }
+        const std::string& cmd = argv[1];
+        // check builtins
+        if (is_builtin_name(cmd)) {
+            std::printf("%s is a shell builtin\n", cmd.c_str());
+            return 0;
+        }
+        // check lua functions
+        lua_getglobal(L_, cmd.c_str());
+        if (lua_isfunction(L_, -1)) {
+            std::printf("%s is a Lua function\n", cmd.c_str());
+            lua_pop(L_, 1);
+            return 0;
+        }
+        lua_pop(L_, 1);
+        // check PATH
+        const char* path_env = std::getenv("PATH");
+        if (path_env) {
+            std::string path(path_env);
+            size_t start = 0;
+            while (start <= path.size()) {
+                size_t colon = path.find(':', start);
+                std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+                if (dir.empty()) dir = ".";
+                std::string full = dir + "/" + cmd;
+                struct stat st{};
+                if (stat(full.c_str(), &st) == 0 && (st.st_mode & S_IXUSR)) {
+                    std::printf("%s is %s\n", cmd.c_str(), full.c_str());
+                    return 0;
+                }
+                if (colon == std::string::npos) break;
+                start = colon + 1;
+            }
+        }
+        std::fprintf(stderr, "wisp: type: %s: not found\n", cmd.c_str());
+        return 1;
+    }
+
     return 1; // unreachable: is_builtin_name() gates entry to this function
 }
 
@@ -786,6 +933,10 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
             if (!is_last) { close(out_pipe[0]); close(out_pipe[1]); }
 
             for (auto& r : ec.redirects) {
+                if (r.kind == RedirKind::ErrToOut) {
+                    dup2(STDOUT_FILENO, STDERR_FILENO);
+                    continue;
+                }
                 std::string path = expand_word(r.target);
                 int flags = 0, fd_target = -1;
                 switch (r.kind) {
@@ -793,6 +944,7 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
                     case RedirKind::Out: flags = O_WRONLY | O_CREAT | O_TRUNC; fd_target = STDOUT_FILENO; break;
                     case RedirKind::Append: flags = O_WRONLY | O_CREAT | O_APPEND; fd_target = STDOUT_FILENO; break;
                     case RedirKind::ErrOut: flags = O_WRONLY | O_CREAT | O_TRUNC; fd_target = STDERR_FILENO; break;
+                    case RedirKind::ErrToOut: break; // handled above
                 }
                 int fd = open(path.c_str(), flags, 0644);
                 if (fd < 0) {

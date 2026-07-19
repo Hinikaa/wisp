@@ -19,7 +19,7 @@ struct Word {
     bool literal = false; // single-quoted: never expanded
 };
 
-enum class RedirKind { In, Out, Append, ErrOut };
+enum class RedirKind { In, Out, Append, ErrOut, ErrToOut };
 
 struct Redirect {
     RedirKind kind;

@@ -75,7 +75,7 @@ void completion(const char* buf, linenoiseCompletions* lc) {
     };
 
     if (first_word) {
-        static const char* kBuiltins[] = {"cd", "exit", "export", "command", "jobs", "fg", "bg", "kill", "source", "echo"};
+        static const char* kBuiltins[] = {"cd", "exit", "export", "command", "jobs", "fg", "bg", "kill", "source", "echo", "disown", "wait", "pwd", "type"};
         for (const char* b : kBuiltins)
             if (starts_with(b, prefix)) add_if_new(b);
 

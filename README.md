@@ -151,8 +151,8 @@ boundary, the same row-per-line format shown for terminal display.
 Tab completion works for:
 
 - **Commands** (first word): builtins (`cd`, `exit`, `export`, `command`,
-  `jobs`, `fg`, `bg`, `kill`, `source`, `echo`), Lua global functions, and
-  `$PATH` executables (filtered to `+x` only)
+  `jobs`, `fg`, `bg`, `kill`, `source`, `echo`, `disown`, `wait`, `pwd`,
+  `type`), Lua global functions, and `$PATH` executables (filtered to `+x` only)
 - **Filenames** (later words): with `/` suffix for directories, hidden files
   shown only when prefix starts with `.`
 - **Lua mode** (`:prefix`): all Lua global names when input starts with `:`
@@ -217,7 +217,7 @@ iterations takes 220ms (5x slower due to fork/exec per stage).
 Not everyone needs bash. Here's where wisp sits relative to the alternatives
 people actually use.
 
-| Feature | wisp v1.3 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
+| Feature | wisp v2 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
 |---|---|---|---|---|---|---|
 | Interactive REPL | yes | yes | no | yes | yes | yes |
 | Job control (fg/bg) | yes | yes | no | yes | partial | no |
@@ -235,13 +235,16 @@ people actually use.
 | Binary size | **195K** | 1.2M | ~100K | ~1M | ~15M | ~200M+ |
 | Source lines | **1,781** | ~500K | ~20K | ~250K | ~100K | millions |
 
-### What wisp v1.3 can do
+### What wisp v2 can do
 
 - Run any shell command: `ls`, `grep -r src/`, `make && make install`
-- Redirects: `<`, `>`, `>>`, `2>`
+- Redirects: `<`, `>`, `>>`, `2>`, `2>&1`
 - Background jobs: `sleep 30 &` then `jobs`, `fg %1`, `bg %1`
 - Kill background jobs: `kill %1`, `kill -9 %1`
+- Disown jobs: `disown %1` (removes from job table, survives shell exit)
+- Wait for jobs: `wait %1` or `wait` (all background jobs)
 - `$?`, `$(cmd)`, `$VAR`, `${VAR:-default}` expansion
+- Brace expansion: `{a,b,c}`, `{x,y}{1,2}`
 - Glob patterns: `*.cpp`, `src/**/*.h`
 - Tab completion: commands, filenames, Lua functions
 - Lua one-liners: `:1 + 1`, `:print("hi")`
@@ -250,13 +253,14 @@ people actually use.
 - One-off commands: `./wisp -c 'return {1, 2, 3}'`
 - Script execution: `./wisp -f script.lua` or shebang `#!/usr/bin/env wisp`
 - `cd -` to go to previous directory
+- `pwd` to print working directory
 - `source file.lua` to load Lua files at runtime
+- `type cmd` to check if command is builtin, function, or PATH executable
 - `echo -n` (no newline) and `echo -e` (escape sequences: `\n`, `\t`, `\\`)
 - Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
 
-### What wisp v1.3 can't do (yet)
+### What wisp v2 can't do (yet)
 
-- No brace expansion: `{a,b,c}` stays literal
 - No array syntax: `arr=(1 2 3)` doesn't exist
 - No `[[ ]]` double-bracket tests
 - No `${!prefix*}` or `${VAR+alternative}` expansions
@@ -323,7 +327,8 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
 
 - **Globbing works for bare and double-quoted words.** Single-quoted words
   are never expanded. Patterns matching nothing are kept as-is (bash
-  behavior). No brace expansion, no tilde expansion beyond `~/path`.
+  behavior). Brace expansion is separate from globbing and works on all
+  unquoted words.
 - **Structured-pipe rendering is row-per-line `key=value`, not
   column-aligned.** A real width-scanning aligned-table renderer needs a
   two-pass width scan and has to reconcile rows with heterogeneous keys
@@ -357,6 +362,16 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
 - **`echo -n`** suppresses trailing newline. **`echo -e`** processes escape
   sequences (`\n`, `\t`, `\\`). Plain `echo` with no flags works as
   expected.
+- **`disown %N`** removes a job from the job table. The process keeps
+  running but the shell won't send SIGHUP on exit.
+- **`wait %N`** blocks until the specified background job finishes. `wait`
+  with no arguments waits for all background jobs.
+- **`pwd`** prints the current working directory.
+- **`type cmd`** shows whether a command is a shell builtin, a Lua function,
+  or a PATH executable (and where).
+- **Brace expansion** works: `{a,b,c}` expands to separate words,
+  `{x,y}{1,2}` to `x1 x2 y1 y2`. Nested braces supported.
+- **`2>&1`** redirects stderr to stdout. No target file needed.
 
 ## License
 

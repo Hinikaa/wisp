@@ -36,6 +36,11 @@ Sleep 0.3
 Enter
 Sleep 0.5
 
+Type "echo {a,b,c}{1,2}"
+Sleep 0.3
+Enter
+Sleep 0.8
+
 Type "nums | sorted"
 Sleep 0.3
 Enter
@@ -46,35 +51,20 @@ Sleep 0.3
 Enter
 Sleep 0.8
 
-Type "grpe --version"
+Type "type cd"
 Sleep 0.3
 Enter
-Sleep 1
+Sleep 0.8
 
-Type "cd /tmp"
+Type "ls /nonexistent 2>&1"
 Sleep 0.3
 Enter
-Sleep 0.5
+Sleep 0.8
 
-Type "cd -"
+Type "cd /tmp && cd - && pwd"
 Sleep 0.3
 Enter
-Sleep 0.5
-
-Type "pwd"
-Sleep 0.3
-Enter
-Sleep 0.5
-
-Type "echo -n one two"
-Sleep 0.3
-Enter
-Sleep 0.5
-
-Type "echo -e 'line1\\nline2'"
-Sleep 0.3
-Enter
-Sleep 0.5
+Sleep 0.8
 
 Type "exit"
 Sleep 0.3

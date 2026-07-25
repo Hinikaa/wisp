@@ -61,11 +61,6 @@ Sleep 0.3
 Enter
 Sleep 0.8
 
-Type "cd /tmp && cd - && pwd"
-Sleep 0.3
-Enter
-Sleep 0.8
-
 Type "exit"
 Sleep 0.3
 Enter

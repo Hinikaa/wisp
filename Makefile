@@ -8,7 +8,7 @@ endif
 LUA_CFLAGS := $(shell pkg-config --cflags $(LUA_PKG))
 LUA_LIBS := $(shell pkg-config --libs $(LUA_PKG))
 
-CORE_OBJS = lexer.o parser.o executor.o lua_env.o linenoise.o
+CORE_OBJS = lexer.o parser.o executor.o lua_env.o linenoise.o pkg_manager.o
 
 wisp: main.o $(CORE_OBJS)
 	$(CXX) $(CXXFLAGS) -o wisp main.o $(CORE_OBJS) $(LUA_LIBS) -lpthread
@@ -28,6 +28,9 @@ executor.o: executor.cpp executor.h lua_env.h parser.h
 lua_env.o: lua_env.cpp lua_env.h builtins.h
 	$(CXX) $(CXXFLAGS) $(LUA_CFLAGS) -c lua_env.cpp
 
+pkg_manager.o: pkg_manager.cpp pkg_manager.h
+	$(CXX) $(CXXFLAGS) -c pkg_manager.cpp
+
 linenoise.o: linenoise.c linenoise.h
 	$(CC) -O2 -Wall -c linenoise.c
 
@@ -40,8 +43,8 @@ test_parser: test_parser.cpp parser.o lexer.o
 test_lua_env: test_lua_env.cpp lua_env.o
 	$(CXX) $(CXXFLAGS) $(LUA_CFLAGS) -o test_lua_env test_lua_env.cpp lua_env.o $(LUA_LIBS)
 
-test_executor: test_executor.cpp executor.o lua_env.o parser.o lexer.o
-	$(CXX) $(CXXFLAGS) $(LUA_CFLAGS) -o test_executor test_executor.cpp executor.o lua_env.o parser.o lexer.o $(LUA_LIBS) -lpthread
+test_executor: test_executor.cpp executor.o lua_env.o parser.o lexer.o pkg_manager.o
+	$(CXX) $(CXXFLAGS) $(LUA_CFLAGS) -o test_executor test_executor.cpp executor.o lua_env.o parser.o lexer.o pkg_manager.o $(LUA_LIBS) -lpthread
 
 test: test_lexer test_parser test_lua_env test_executor
 	./test_lexer && ./test_parser && ./test_lua_env && ./test_executor

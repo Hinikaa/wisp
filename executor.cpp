@@ -1,6 +1,7 @@
 #include "executor.h"
 
 #include "builtins.h"
+#include "pkg_manager.h"
 
 #include <algorithm>
 #include <cctype>
@@ -732,6 +733,59 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         }
         std::fprintf(stderr, "wisp: type: %s: not found\n", cmd.c_str());
         return 1;
+    }
+
+    if (name == "pkg") {
+        if (argv.size() < 2) {
+            std::fprintf(stderr, "Usage: pkg <command> [args]\n");
+            std::fprintf(stderr, "Commands:\n");
+            std::fprintf(stderr, "  install <package>  Install a package\n");
+            std::fprintf(stderr, "  update [package]   Update packages\n");
+            std::fprintf(stderr, "  remove <package>   Remove a package\n");
+            std::fprintf(stderr, "  list               List installed packages\n");
+            std::fprintf(stderr, "  search <query>     Search for packages\n");
+            std::fprintf(stderr, "  info <package>     Show package information\n");
+            return 1;
+        }
+        
+        const std::string& subcmd = argv[1];
+        
+        if (subcmd == "init") {
+            pkg_manager::init();
+            return 0;
+        } else if (subcmd == "install") {
+            if (argv.size() < 3) {
+                std::fprintf(stderr, "Usage: pkg install <package_name>\n");
+                return 1;
+            }
+            return pkg_manager::install(argv[2]);
+        } else if (subcmd == "update") {
+            std::string package = (argv.size() > 2) ? argv[2] : "";
+            return pkg_manager::update(package);
+        } else if (subcmd == "remove") {
+            if (argv.size() < 3) {
+                std::fprintf(stderr, "Usage: pkg remove <package_name>\n");
+                return 1;
+            }
+            return pkg_manager::remove(argv[2]);
+        } else if (subcmd == "list") {
+            return pkg_manager::list();
+        } else if (subcmd == "search") {
+            if (argv.size() < 3) {
+                std::fprintf(stderr, "Usage: pkg search <query>\n");
+                return 1;
+            }
+            return pkg_manager::search(argv[2]);
+        } else if (subcmd == "info") {
+            if (argv.size() < 3) {
+                std::fprintf(stderr, "Usage: pkg info <package_name>\n");
+                return 1;
+            }
+            return pkg_manager::info(argv[2]);
+        } else {
+            std::fprintf(stderr, "Unknown pkg command: %s\n", subcmd.c_str());
+            return 1;
+        }
     }
 
     return 1; // unreachable: is_builtin_name() gates entry to this function

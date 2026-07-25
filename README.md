@@ -152,7 +152,7 @@ Tab completion works for:
 
 - **Commands** (first word): builtins (`cd`, `exit`, `export`, `command`,
   `jobs`, `fg`, `bg`, `kill`, `source`, `echo`, `disown`, `wait`, `pwd`,
-  `type`), Lua global functions, and `$PATH` executables (filtered to `+x` only)
+  `type`, `pkg`), Lua global functions, and `$PATH` executables (filtered to `+x` only)
 - **Filenames** (later words): with `/` suffix for directories, hidden files
   shown only when prefix starts with `.`
 - **Lua mode** (`:prefix`): all Lua global names when input starts with `:`
@@ -182,6 +182,35 @@ wisp> sleep 30 &
 [1] 84213
 wisp> jobs
 [1]  Running    sleep 30
+```
+
+### Package Management
+
+```bash
+wisp> pkg search json
+# Search for JSON packages on LuaRocks
+
+wisp> pkg install luasocket
+# Install luasocket package
+
+wisp> pkg list
+# List installed packages
+
+wisp> pkg info luasocket
+# Show detailed information about luasocket
+
+wisp> pkg update luasocket
+# Update luasocket to latest version
+
+wisp> pkg remove luasocket
+# Remove luasocket package
+```
+
+Installed packages are automatically available via `require()`:
+
+```lua
+local socket = require("socket")
+print(socket._VERSION)
 ```
 
 ## Benchmarks
@@ -257,6 +286,12 @@ people actually use.
 - `source file.lua` to load Lua files at runtime
 - `type cmd` to check if command is builtin, function, or PATH executable
 - `echo -n` (no newline) and `echo -e` (escape sequences: `\n`, `\t`, `\\`)
+- `pkg install <name>` to install Lua packages (uses LuaRocks if available, fallback for simple installations)
+- `pkg list` to list installed packages
+- `pkg remove <name>` to remove installed packages
+- `pkg search <query>` to search for available packages
+- `pkg info <name>` to show package information
+- `pkg update [name]` to update packages (check for updates)
 - Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
 
 ### What wisp v2 can't do (yet)
@@ -369,6 +404,16 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
 - **`pwd`** prints the current working directory.
 - **`type cmd`** shows whether a command is a shell builtin, a Lua function,
   or a PATH executable (and where).
+- **`pkg install <name>`** installs a Lua package. Uses LuaRocks if available
+  (the standard Lua package manager), otherwise falls back to a simple
+  installation method. Packages installed with LuaRocks are immediately
+  available via `require()`.
+- **`pkg list`** shows all installed packages.
+- **`pkg remove <name>`** removes an installed package.
+- **`pkg search <query>`** searches for available packages on LuaRocks.
+- **`pkg info <name>`** shows detailed information about an installed package.
+- **`pkg update [name]`** checks for updates. Without a package name, shows
+  outdated packages. With a package name, reinstalls to update it.
 - **Brace expansion** works: `{a,b,c}` expands to separate words,
   `{x,y}{1,2}` to `x1 x2 y1 y2`. Nested braces supported.
 - **`2>&1`** redirects stderr to stdout. No target file needed.

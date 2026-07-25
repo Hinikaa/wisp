@@ -5,3 +5,8 @@ test_parser
 test_lua_env
 test_executor
 wisp-backup
+.dmcode-memory.json
+PROMOTION.md
+backup-v1.1/
+logo.png
+*.cast

@@ -200,6 +200,29 @@ lua_State* init() {
     lua_setglobal(L, "sh");
     lua_pushcfunction(L, l_setenv);
     lua_setglobal(L, "setenv");
+    
+    // Add package.path for wisp packages
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+        std::string packages_dir = std::string(home) + "/.wisp/packages";
+        lua_getglobal(L, "package");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "path");
+            if (lua_isstring(L, -1)) {
+                std::string current_path = lua_tostring(L, -1);
+                std::string new_path = current_path + ";" + packages_dir + "/?.lua;" + packages_dir + "/?/init.lua";
+                lua_pop(L, 1);
+                lua_pushstring(L, new_path.c_str());
+                lua_setfield(L, -2, "path");
+            } else {
+                lua_pop(L, 1);
+                lua_pushstring(L, (packages_dir + "/?.lua;" + packages_dir + "/?/init.lua").c_str());
+                lua_setfield(L, -2, "path");
+            }
+        }
+        lua_pop(L, 1);
+    }
+    
     return L;
 }
 

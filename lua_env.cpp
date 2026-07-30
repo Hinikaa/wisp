@@ -32,6 +32,20 @@ namespace {
 
 lua_env::ShellCallback g_shell_cb;
 
+lua_State* g_interrupt_L = nullptr;
+
+void interrupt_hook(lua_State* L, lua_Debug*) {
+    lua_sethook(L, nullptr, 0, 0);
+    luaL_error(L, "interrupted");
+}
+
+void interrupt_action(int sig) {
+    std::signal(sig, SIG_DFL); // a second Ctrl-C during unwind kills us, same as lua.c
+    if (g_interrupt_L)
+        lua_sethook(g_interrupt_L, interrupt_hook,
+                    LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT, 1);
+}
+
 int l_sh(lua_State* L) {
     const char* cmdline = luaL_checkstring(L, 1);
     int rc = g_shell_cb ? g_shell_cb(cmdline) : 127;
@@ -191,6 +205,19 @@ void append_record_line(std::string& out, const LuaValue& rec) {
 
 namespace lua_env {
 
+InterruptGuard::InterruptGuard(lua_State* L) {
+    g_interrupt_L = L;
+    struct sigaction sa {};
+    sa.sa_handler = interrupt_action;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, &old_);
+}
+
+InterruptGuard::~InterruptGuard() {
+    sigaction(SIGINT, &old_, nullptr);
+    g_interrupt_L = nullptr;
+}
+
 void set_shell_callback(ShellCallback cb) { g_shell_cb = std::move(cb); }
 
 lua_State* init() {
@@ -200,29 +227,21 @@ lua_State* init() {
     lua_setglobal(L, "sh");
     lua_pushcfunction(L, l_setenv);
     lua_setglobal(L, "setenv");
-    
-    // Add package.path for wisp packages
-    const char* home = std::getenv("HOME");
-    if (home && *home) {
-        std::string packages_dir = std::string(home) + "/.wisp/packages";
-        lua_getglobal(L, "package");
-        if (lua_istable(L, -1)) {
-            lua_getfield(L, -1, "path");
-            if (lua_isstring(L, -1)) {
-                std::string current_path = lua_tostring(L, -1);
-                std::string new_path = current_path + ";" + packages_dir + "/?.lua;" + packages_dir + "/?/init.lua";
-                lua_pop(L, 1);
-                lua_pushstring(L, new_path.c_str());
-                lua_setfield(L, -2, "path");
-            } else {
-                lua_pop(L, 1);
-                lua_pushstring(L, (packages_dir + "/?.lua;" + packages_dir + "/?/init.lua").c_str());
-                lua_setfield(L, -2, "path");
-            }
-        }
-        lua_pop(L, 1);
+
+    // Where `pkg install` (luarocks --local) actually puts things, plus a
+    // plain drop-in directory. cpath matters as much as path: without it no
+    // rock with a C component can load at all. Spelled out rather than asked
+    // of `luarocks path`, which would cost a fork on every startup.
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        std::string h(home);
+        std::string add =
+            "package.path = '" + h + "/.luarocks/share/lua/" LUA_VDIR "/?.lua;" +
+            h + "/.luarocks/share/lua/" LUA_VDIR "/?/init.lua;" +
+            h + "/.wisp/packages/?.lua;" + h + "/.wisp/packages/?/init.lua;' .. package.path\n"
+            "package.cpath = '" + h + "/.luarocks/lib/lua/" LUA_VDIR "/?.so;' .. package.cpath";
+        if (luaL_dostring(L, add.c_str()) != LUA_OK) lua_pop(L, 1);
     }
-    
+
     return L;
 }
 
@@ -276,22 +295,32 @@ CmdKind resolve_command(lua_State* L, const std::string& name) {
     return is_fn ? CmdKind::LuaFn : CmdKind::External;
 }
 
-LuaValue call_lua_function(lua_State* L, const std::string& name,
-                            const std::vector<std::string>& argv,
-                            const LuaValue& input, bool has_input) {
+void push_value(lua_State* L, const LuaValue& v) { push_luavalue(L, v); }
+LuaValue pull_value(lua_State* L, int idx) { return pull_luavalue(L, idx); }
+
+void call_lua_function_top(lua_State* L, const std::string& name,
+                           const std::vector<std::string>& argv, bool has_input) {
     lua_getglobal(L, name.c_str());
     if (!lua_isfunction(L, -1)) {
         lua_pop(L, 1);
+        if (has_input) lua_pop(L, 1);
         throw std::runtime_error("wisp: " + name + ": not a function");
     }
-    push_luavalue(L, has_input ? input : LuaValue::nil());
+    if (has_input) lua_insert(L, -2); // slide the function under its input
+    else lua_pushnil(L);
     for (auto& a : argv) lua_pushlstring(L, a.data(), a.size());
-    int nargs = 1 + static_cast<int>(argv.size());
-    if (lua_pcall(L, nargs, 1, 0) != LUA_OK) {
+    if (lua_pcall(L, 1 + static_cast<int>(argv.size()), 1, 0) != LUA_OK) {
         std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error";
         lua_pop(L, 1);
         throw std::runtime_error("wisp: " + name + ": " + err);
     }
+}
+
+LuaValue call_lua_function(lua_State* L, const std::string& name,
+                            const std::vector<std::string>& argv,
+                            const LuaValue& input, bool has_input) {
+    if (has_input) push_luavalue(L, input);
+    call_lua_function_top(L, name, argv, has_input);
     LuaValue ret = pull_luavalue(L, -1);
     lua_pop(L, 1);
     return ret;

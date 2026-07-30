@@ -1,4 +1,6 @@
 *.o
+*.d
+__pycache__/
 wisp
 test_lexer
 test_parser

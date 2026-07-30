@@ -1,5 +1,6 @@
 #pragma once
 
+#include <csignal>
 #include <functional>
 #include <string>
 #include <utility>
@@ -28,6 +29,27 @@ struct LuaValue {
 
 namespace lua_env {
 
+// Makes a running Lua chunk interruptible with Ctrl-C for as long as it is in
+// scope, by lua.c's own technique: the signal handler arms a debug hook, and
+// the hook unwinds via luaL_error on the next VM instruction. Wrap it around
+// a lua_pcall and nothing else -- armed while no Lua is running, the hook
+// would fire on whatever the user typed next; installed permanently, it would
+// tax every instruction the VM ever executes.
+//
+// The shell ignores SIGINT the rest of the time (job control owns it), so
+// without this an infinite loop in a `:` line or a pipeline stage wedges the
+// shell with no way out.
+class InterruptGuard {
+public:
+    explicit InterruptGuard(lua_State* L);
+    ~InterruptGuard();
+    InterruptGuard(const InterruptGuard&) = delete;
+    InterruptGuard& operator=(const InterruptGuard&) = delete;
+
+private:
+    struct sigaction old_ {};
+};
+
 // Called by the shell's `sh()` Lua binding to run a raw shell-syntax command
 // line from within Lua. Registered once at startup by main.cpp (which owns
 // the Executor); breaks the lua_env <-> executor circular dependency.
@@ -47,9 +69,23 @@ std::string get_prompt(lua_State* L);
 // Builtin > Lua global function > external ($PATH, checked lazily at exec time).
 CmdKind resolve_command(lua_State* L, const std::string& name);
 
-// Calls a Lua-function-command with the fixed convention `function(input, ...)`:
-// input is the previous native stage's value (nil if has_input is false), argv
-// is the plain shell-word arguments. Throws std::runtime_error on a Lua error.
+// The C++ <-> Lua value boundary. Only crossed at the ends of a native run:
+// in the middle, values stay on the Lua stack (see call_lua_function_top).
+void push_value(lua_State* L, const LuaValue& v);
+LuaValue pull_value(lua_State* L, int idx);
+
+// Calls a Lua-function-command with the fixed convention `function(input, ...)`.
+// When has_input, the input value is already on top of the stack and is
+// consumed; either way the return value is left on top. Chaining stages this
+// way keeps a pipeline's data inside the VM -- converting to LuaValue and back
+// between stages would deep-copy every record twice per stage, which is the
+// cost this whole design exists to avoid.
+// Throws std::runtime_error on a Lua error.
+void call_lua_function_top(lua_State* L, const std::string& name,
+                           const std::vector<std::string>& argv, bool has_input);
+
+// Same call, with the value crossing in and out as a LuaValue. Convenience for
+// callers outside a run (and for tests).
 LuaValue call_lua_function(lua_State* L, const std::string& name,
                             const std::vector<std::string>& argv,
                             const LuaValue& input, bool has_input);

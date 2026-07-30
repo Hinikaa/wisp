@@ -114,6 +114,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <stdint.h>
 #include "linenoise.h"
@@ -496,8 +497,10 @@ enum KEY_ACTION{
 	CTRL_K = 11,        /* Ctrl+k */
 	CTRL_L = 12,        /* Ctrl+l */
 	ENTER = 13,         /* Enter */
+	CTRL_G = 7,         /* Ctrl-g */
 	CTRL_N = 14,        /* Ctrl-n */
 	CTRL_P = 16,        /* Ctrl-p */
+	CTRL_R = 18,        /* Ctrl-r */
 	CTRL_T = 20,        /* Ctrl-t */
 	CTRL_U = 21,        /* Ctrl+u */
 	CTRL_W = 23,        /* Ctrl+w */
@@ -1872,6 +1875,100 @@ char *linenoiseEditMore = "If you see this, you are misusing the API: when linen
  *
  * Some other errno: I/O error.
  */
+/* =================== Reverse incremental search (Ctrl-R) ==================
+ *
+ * Local addition, not upstream linenoise. The terminal is already in raw mode
+ * by the time this runs, so it can own its own read loop and hand the chosen
+ * line back to the editor when it finishes -- which keeps the whole feature
+ * to one function plus one switch case, instead of another mode threaded
+ * through struct linenoiseState and the main key state machine.
+ *
+ * Returns the key that ended the search: ENTER to run the match, ESC (or any
+ * other control key) to keep editing it, CTRL_C/CTRL_G to abandon it. */
+
+static int linenoiseHasPendingInput(int fd) {
+    struct timeval tv = {0, 0};
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(fd, &fds);
+    return select(fd + 1, &fds, NULL, NULL, &tv) > 0;
+}
+
+static void linenoiseSearchSetLine(struct linenoiseState *l, const char *s) {
+    size_t n = s ? strlen(s) : 0;
+    if (n > l->buflen - 1) n = l->buflen - 1;
+    if (n) memcpy(l->buf, s, n);
+    l->buf[n] = '\0';
+    l->len = l->pos = n;
+    l->fold_count = 0;
+}
+
+static int linenoiseSearchHistory(struct linenoiseState *l) {
+    char query[128] = {0};
+    char header[192];
+    size_t qlen = 0;
+    /* history[history_len-1] is the line being edited, not a past entry. */
+    int from = history_len - 2, match = -1;
+    int result = ESC;
+    char *saved = strdup(l->buf);
+    const char *saved_prompt = l->prompt;
+    size_t saved_plen = l->plen, saved_pos = l->pos;
+
+    if (!saved) return result;
+
+    for (;;) {
+        char c;
+        int i;
+
+        match = -1;
+        for (i = from; i >= 0; i--) {
+            if (qlen == 0 || strstr(history[i], query)) { match = i; break; }
+        }
+
+        snprintf(header, sizeof(header), "(reverse-i-search)`%s': ", query);
+        l->prompt = header;
+        l->plen = strlen(header);
+        linenoiseSearchSetLine(l, match >= 0 ? history[match] : "");
+        refreshLine(l);
+
+        if (read(l->ifd, &c, 1) <= 0) { result = CTRL_C; break; }
+
+        if (c == CTRL_R) {
+            from = (match > 0) ? match - 1 : -1; /* step to the next older hit */
+            continue;
+        }
+        if (c == BACKSPACE || c == CTRL_H) {
+            if (qlen) query[--qlen] = '\0';
+            from = history_len - 2;
+            continue;
+        }
+        if (c == ESC) {
+            /* Drain a following CSI/SS3 sequence so an arrow key does not end
+             * up typed into the line we just accepted. */
+            while (linenoiseHasPendingInput(l->ifd)) {
+                char junk;
+                if (read(l->ifd, &junk, 1) <= 0) break;
+            }
+            break;
+        }
+        if (c == CTRL_C || c == CTRL_G || c == ENTER) { result = c; break; }
+        if ((unsigned char)c < 32) break; /* any other control key: accept and resume editing */
+
+        if (qlen + 1 < sizeof(query)) { query[qlen++] = c; query[qlen] = '\0'; }
+        if (match >= 0) from = match; /* refine in place rather than jumping back */
+    }
+
+    l->prompt = saved_prompt;
+    l->plen = saved_plen;
+    if (result == CTRL_C || result == CTRL_G) {
+        linenoiseSearchSetLine(l, saved);
+        l->pos = saved_pos < l->len ? saved_pos : l->len;
+    }
+    free(saved);
+    refreshLine(l);
+    return result;
+}
+
 char *linenoiseEditFeed(struct linenoiseState *l) {
     /* Not a TTY, pass control to line reading without character
      * count limits. */
@@ -1899,6 +1996,10 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
     }
 
     switch(c) {
+    case CTRL_R:   /* ctrl-r, reverse incremental history search */
+        if (linenoiseSearchHistory(l) != ENTER) break;
+        /* fall through: the user accepted a match with Enter, so run it */
+        /* fallthrough */
     case ENTER:    /* enter */
         history_len--;
         free(history[history_len]);

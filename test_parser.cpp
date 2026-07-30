@@ -37,6 +37,14 @@ static void test_redirects_with_pipe() {
     assert(pl.commands[1].redirects[1].kind == RedirKind::ErrOut);
 }
 
+static void test_combined_redirect() {
+    Line l = parse_line("cmd &> all.log");
+    auto& cmd = l.jobs[0].and_or.parts[0].pipeline.commands[0];
+    assert(cmd.redirects.size() == 1);
+    assert(cmd.redirects[0].kind == RedirKind::OutErr);
+    assert(cmd.redirects[0].target.text == "all.log");
+}
+
 static void test_and_or_chain() {
     Line l = parse_line("a && b || c");
     auto& parts = l.jobs[0].and_or.parts;
@@ -91,6 +99,7 @@ int main() {
     test_single_command();
     test_pipeline_three_stages();
     test_redirects_with_pipe();
+    test_combined_redirect();
     test_and_or_chain();
     test_semicolon_sequencing();
     test_trailing_ampersand_sets_background();

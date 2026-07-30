@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,13 +13,28 @@ extern "C" {
 #include <lua.h>
 }
 
+#include "builtins.h"
 #include "executor.h"
 #include "linenoise.h"
 #include "lua_env.h"
 
+#define WISP_VERSION "3.0.0"
+
 namespace {
 
 lua_State* g_L = nullptr; // for the completion callback only
+
+const char kUsage[] =
+    "usage: wisp [options] [script]\n"
+    "\n"
+    "  -c <line>   run a shell command line (a leading ':' makes it Lua)\n"
+    "  -e <chunk>  run a Lua chunk\n"
+    "  -f <file>   run a Lua script file\n"
+    "  --version   print the version\n"
+    "  --help      print this message\n"
+    "\n"
+    "With no arguments, starts the interactive shell.\n"
+    "Config: $XDG_CONFIG_HOME/wisp/init.lua (default ~/.config/wisp/init.lua)\n";
 
 std::string history_path() {
     const char* home = std::getenv("HOME");
@@ -75,8 +91,8 @@ void completion(const char* buf, linenoiseCompletions* lc) {
     };
 
     if (first_word) {
-        static const char* kBuiltins[] = {"cd", "exit", "export", "command", "jobs", "fg", "bg", "kill", "source", "echo", "disown", "wait", "pwd", "type", "pkg"};
-        for (const char* b : kBuiltins)
+        for (const char* b : {"cd", "exit", "export", "command", "jobs", "fg", "bg", "kill",
+                              "source", "echo", "disown", "wait", "pwd", "type", "pkg"})
             if (starts_with(b, prefix)) add_if_new(b);
 
         if (g_L) {
@@ -92,31 +108,12 @@ void completion(const char* buf, linenoiseCompletions* lc) {
             lua_pop(g_L, 1);
         }
 
-        const char* path_env = std::getenv("PATH");
-        if (path_env) {
-            std::string path(path_env);
-            size_t start = 0;
-            while (start <= path.size()) {
-                size_t colon = path.find(':', start);
-                std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-                if (dir.empty()) dir = ".";
-                DIR* d = opendir(dir.c_str());
-                if (d) {
-                    struct dirent* ent;
-                    while ((ent = readdir(d)) != nullptr) {
-                        std::string name = ent->d_name;
-                        if (name == "." || name == "..") continue;
-                        if (!starts_with(name, prefix)) continue;
-                        std::string full = dir + "/" + name;
-                        struct stat st{};
-                        if (stat(full.c_str(), &st) == 0 && (st.st_mode & S_IXUSR))
-                            add_if_new(name);
-                    }
-                    closedir(d);
-                }
-                if (colon == std::string::npos) break;
-                start = colon + 1;
-            }
+        // Cached, so this costs nothing after the first Tab. The set is
+        // sorted, so a prefix scan can stop at the first name past it.
+        const auto& execs = path_executables();
+        for (auto it = execs.lower_bound(prefix); it != execs.end(); ++it) {
+            if (!starts_with(*it, prefix)) break;
+            add_if_new(*it);
         }
     } else {
         std::string dir = ".", base = prefix;
@@ -179,7 +176,15 @@ int run_lua_sigil(lua_State* L, std::string chunk) {
         }
     }
 
-    if (lua_pcall(L, 0, LUA_MULTRET, 0) != LUA_OK) {
+    // Guarded only across the call, never across the `>>> ` continuation
+    // prompt above: a hook armed while no Lua is running would fire on
+    // whatever the user typed next instead.
+    int rc;
+    {
+        lua_env::InterruptGuard guard(L);
+        rc = lua_pcall(L, 0, LUA_MULTRET, 0);
+    }
+    if (rc != LUA_OK) {
         std::fprintf(stderr, "wisp: lua: %s\n", lua_tostring(L, -1));
         lua_settop(L, top_before);
         return 1;
@@ -196,78 +201,90 @@ int run_lua_sigil(lua_State* L, std::string chunk) {
     return 0;
 }
 
+// Loads and runs a Lua file: `-f script.lua`, or a shebang'd script wisp was
+// invoked on directly.
+static int run_script(lua_State* L, const char* path) {
+    if (luaL_loadfile(L, path) != LUA_OK) {
+        std::fprintf(stderr, "wisp: %s: %s\n", path, lua_tostring(L, -1));
+        lua_settop(L, 0);
+        return 1;
+    }
+    Executor exec(L);
+    exec.init_job_control();
+    int status = lua_pcall(L, 0, LUA_MULTRET, 0);
+    if (status != LUA_OK) std::fprintf(stderr, "wisp: %s\n", lua_tostring(L, -1));
+    exec.reap_background();
+    lua_settop(L, 0);
+    return status != LUA_OK ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+    // Answered before Lua is even started: these have to work when something
+    // is merely probing what it just found on $PATH.
+    if (argc >= 2) {
+        if (std::strcmp(argv[1], "--version") == 0 || std::strcmp(argv[1], "-v") == 0) {
+            std::printf("wisp %s\n", WISP_VERSION);
+            return 0;
+        }
+        if (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0) {
+            std::fputs(kUsage, stdout);
+            return 0;
+        }
+    }
+
     lua_State* L = lua_env::init();
     g_L = L;
     lua_env::load_config(L, lua_env::default_config_path());
 
-    if (argc >= 3 && std::strcmp(argv[1], "-c") == 0) {
-        int status = run_lua_sigil(L, argv[2]);
-        lua_env::close(L);
+    struct Closer {
+        lua_State* L;
+        ~Closer() { lua_env::close(L); }
+    } closer{L};
+
+    const char* flag = argc >= 2 ? argv[1] : "";
+    bool takes_arg = std::strcmp(flag, "-c") == 0 || std::strcmp(flag, "-e") == 0 ||
+                     std::strcmp(flag, "-f") == 0;
+    if (takes_arg && argc < 3) {
+        std::fprintf(stderr, "wisp: %s requires an argument\n", flag);
+        return 1;
+    }
+
+    // -c is shell syntax, the way everything that spawns $SHELL expects; a
+    // leading ':' still means Lua, exactly as at the prompt. -e is Lua
+    // outright.
+    if (std::strcmp(flag, "-c") == 0) {
+        Executor exec(L);
+        exec.init_job_control();
+        int status = argv[2][0] == ':' ? run_lua_sigil(L, argv[2] + 1) : exec.run_line_str(argv[2]);
+        exec.reap_background();
         return status;
     }
-
-    if (argc >= 2 && std::strcmp(argv[1], "-c") == 0) {
-        std::fprintf(stderr, "wisp: -c requires an argument\n");
-        lua_env::close(L);
-        return 1;
-    }
-
-    if (argc >= 3 && std::strcmp(argv[1], "-f") == 0) {
-        const char* path = argv[2];
-        if (luaL_loadfile(L, path) != LUA_OK) {
-            std::fprintf(stderr, "wisp: %s: %s\n", path, lua_tostring(L, -1));
-            lua_settop(L, 0);
-            lua_env::close(L);
-            return 1;
-        }
-        Executor exec(L);
-        exec.init_job_control();
-        int status = lua_pcall(L, 0, LUA_MULTRET, 0);
-        if (status != LUA_OK) std::fprintf(stderr, "wisp: %s\n", lua_tostring(L, -1));
-        exec.reap_background();
-        lua_settop(L, 0);
-        lua_env::close(L);
-        return status != LUA_OK ? 1 : 0;
-    }
-
-    if (argc >= 2 && std::strcmp(argv[1], "-f") == 0) {
-        std::fprintf(stderr, "wisp: -f requires a filename\n");
-        lua_env::close(L);
-        return 1;
-    }
-
-    if (argc >= 2) {
-        // Shebang: wisp invoked directly on a script file (#!/usr/bin/env wisp)
-        const char* path = argv[1];
-        if (luaL_loadfile(L, path) != LUA_OK) {
-            std::fprintf(stderr, "wisp: %s: %s\n", path, lua_tostring(L, -1));
-            lua_settop(L, 0);
-            lua_env::close(L);
-            return 1;
-        }
-        Executor exec(L);
-        exec.init_job_control();
-        int status = lua_pcall(L, 0, LUA_MULTRET, 0);
-        if (status != LUA_OK) std::fprintf(stderr, "wisp: %s\n", lua_tostring(L, -1));
-        exec.reap_background();
-        lua_settop(L, 0);
-        lua_env::close(L);
-        return status != LUA_OK ? 1 : 0;
-    }
+    if (std::strcmp(flag, "-e") == 0) return run_lua_sigil(L, argv[2]);
+    if (std::strcmp(flag, "-f") == 0) return run_script(L, argv[2]);
+    if (argc >= 2) return run_script(L, argv[1]);
 
     Executor exec(L);
     exec.init_job_control();
 
     linenoiseSetCompletionCallback(completion);
+    linenoiseSetMultiLine(1); // long lines wrap instead of scrolling over themselves
     linenoiseHistorySetMaxLen(1000);
     std::string hist = history_path();
     if (!hist.empty()) linenoiseHistoryLoad(hist.c_str());
 
     for (;;) {
         std::string prompt = lua_env::get_prompt(L);
+        errno = 0;
         char* raw = linenoise(prompt.c_str());
-        if (!raw) break; // Ctrl-D / EOF
+        if (!raw) {
+            // linenoise reports Ctrl-C the same way it reports EOF, minus
+            // errno. Abandoning the line is not a reason to end the session.
+            if (errno == EAGAIN) {
+                exec.set_status(130);
+                continue;
+            }
+            break; // Ctrl-D / EOF
+        }
 
         std::string line(raw);
         linenoiseFree(raw);
@@ -281,6 +298,5 @@ int main(int argc, char** argv) {
         exec.reap_background();
     }
 
-    lua_env::close(L);
     return 0;
 }

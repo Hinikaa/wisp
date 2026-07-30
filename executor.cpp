@@ -1,7 +1,6 @@
 #include "executor.h"
 
 #include "builtins.h"
-#include "pkg_manager.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,11 +9,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
 #include <exception>
 #include <fcntl.h>
 #include <glob.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -50,6 +47,97 @@ std::string format_job_line(const ShellJob& j) {
     return "[" + std::to_string(j.id) + "]  " + state + "    " + j.cmdline;
 }
 
+namespace {
+
+// `{a..e}` / `{1..9}`, ascending or descending. Returns false when the group
+// isn't a range at all, which is the caller's cue to try commas.
+bool expand_range(const std::string& inner, std::vector<std::string>& out) {
+    size_t dots = inner.find("..");
+    if (dots == std::string::npos || inner.find("..", dots + 2) != std::string::npos) return false;
+    std::string lo = inner.substr(0, dots), hi = inner.substr(dots + 2);
+    if (lo.empty() || hi.empty()) return false;
+
+    if (lo.size() == 1 && hi.size() == 1 && std::isalpha(static_cast<unsigned char>(lo[0])) &&
+        std::isalpha(static_cast<unsigned char>(hi[0]))) {
+        int step = lo[0] <= hi[0] ? 1 : -1;
+        for (char ch = lo[0];; ch = static_cast<char>(ch + step)) {
+            out.push_back(std::string(1, ch));
+            if (ch == hi[0]) break;
+        }
+        return true;
+    }
+
+    char* end = nullptr;
+    long a = std::strtol(lo.c_str(), &end, 10);
+    if (*end) return false;
+    long b = std::strtol(hi.c_str(), &end, 10);
+    if (*end) return false;
+    // A range is the one place a typo can hang the shell; 100k words is far
+    // past anything deliberate.
+    if (std::labs(b - a) > 100000) return false;
+    for (long v = a;; v += (a <= b ? 1 : -1)) {
+        out.push_back(std::to_string(v));
+        if (v == b) break;
+    }
+    return true;
+}
+
+// Depth-0 comma split of a brace group's contents.
+bool split_alternatives(const std::string& inner, std::vector<std::string>& out) {
+    std::string current;
+    int depth = 0;
+    bool saw_comma = false;
+    for (char c : inner) {
+        if (c == '{') ++depth;
+        else if (c == '}') --depth;
+        if (c == ',' && depth == 0) {
+            saw_comma = true;
+            out.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    if (!saw_comma) return false;
+    out.push_back(current);
+    return true;
+}
+
+} // namespace
+
+std::vector<std::string> brace_expand(const std::string& s) {
+    size_t open = s.find('{');
+    if (open == std::string::npos) return {s};
+
+    size_t close = std::string::npos;
+    int depth = 1;
+    for (size_t i = open + 1; i < s.size(); ++i) {
+        if (s[i] == '{') ++depth;
+        else if (s[i] == '}') { --depth; if (depth == 0) { close = i; break; } }
+    }
+    if (close == std::string::npos) return {s};
+
+    std::string before = s.substr(0, open);
+    std::string inner = s.substr(open + 1, close - open - 1);
+    std::string after = s.substr(close + 1);
+
+    // No comma and no range means this isn't a brace expansion at all --
+    // `git show HEAD@{1}` and `awk {print}` have to come through unchanged.
+    std::vector<std::string> items;
+    if (!split_alternatives(inner, items) && !expand_range(inner, items)) {
+        auto rest = brace_expand(after);
+        for (auto& r : rest) r = before + "{" + inner + "}" + r;
+        return rest;
+    }
+
+    std::vector<std::string> result;
+    for (auto& item : items) {
+        auto expanded = brace_expand(before + item + after);
+        result.insert(result.end(), expanded.begin(), expanded.end());
+    }
+    return result;
+}
+
 std::vector<Segment> build_segments(const std::vector<ExpCmd>& cmds) {
     std::vector<Segment> segs;
     Segment cur;
@@ -75,71 +163,27 @@ std::vector<Segment> build_segments(const std::vector<ExpCmd>& cmds) {
 
 namespace {
 
-// Ctrl-C during an in-process native run: reuses lua.c's own standalone-
-// interpreter technique (SIGINT handler arms a debug hook; the hook unwinds
-// via luaL_error on the next VM instruction) rather than inventing a new
-// mechanism. Scoped to just the native-run's execution window via RAII --
-// installing it permanently would tax every VM instruction for no benefit
-// the rest of the time.
-lua_State* g_interrupt_L = nullptr;
-
-int levenshtein(const std::string& a, const std::string& b) {
+// Optimal string alignment distance: Levenshtein, plus a swapped pair of
+// adjacent characters counted as one edit rather than two. Worth the extra
+// row, because that is what a mistyped command usually is -- `grpe` is one
+// slip from `grep`, and plain Levenshtein rates it no closer than a dozen
+// unrelated names two substitutions away.
+int edit_distance(const std::string& a, const std::string& b) {
     int m = static_cast<int>(a.size()), n = static_cast<int>(b.size());
-    std::vector<int> prev(n + 1), curr(n + 1);
+    std::vector<int> prev2(n + 1), prev(n + 1), curr(n + 1);
     for (int j = 0; j <= n; ++j) prev[j] = j;
     for (int i = 1; i <= m; ++i) {
         curr[0] = i;
         for (int j = 1; j <= n; ++j) {
             int cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
             curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost});
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1])
+                curr[j] = std::min(curr[j], prev2[j - 2] + 1);
         }
+        prev2.swap(prev);
         prev.swap(curr);
     }
     return prev[n];
-}
-
-std::vector<std::string> brace_expand(const std::string& s) {
-    // find first unescaped '{' followed by content and '}'
-    size_t open = std::string::npos;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '{') { open = i; break; }
-    }
-    if (open == std::string::npos) return {s};
-
-    size_t close = std::string::npos;
-    int depth = 1;
-    for (size_t i = open + 1; i < s.size(); ++i) {
-        if (s[i] == '{') ++depth;
-        else if (s[i] == '}') { --depth; if (depth == 0) { close = i; break; } }
-    }
-    if (close == std::string::npos) return {s};
-
-    std::string before = s.substr(0, open);
-    std::string inner = s.substr(open + 1, close - open - 1);
-    std::string after = s.substr(close + 1);
-
-    // split on commas at depth 0
-    std::vector<std::string> items;
-    std::string current;
-    int d = 0;
-    for (char c : inner) {
-        if (c == '{') ++d;
-        else if (c == '}') --d;
-        if (c == ',' && d == 0) {
-            items.push_back(current);
-            current.clear();
-        } else {
-            current += c;
-        }
-    }
-    items.push_back(current);
-
-    std::vector<std::string> result;
-    for (auto& item : items) {
-        auto expanded = brace_expand(before + item + after);
-        result.insert(result.end(), expanded.begin(), expanded.end());
-    }
-    return result;
 }
 
 bool has_glob_chars(const std::string& s) {
@@ -168,63 +212,18 @@ std::vector<std::string> glob_expand(const std::string& pattern) {
 }
 
 std::string find_similar_command(const std::string& name, int threshold) {
-    const char* path_env = std::getenv("PATH");
-    if (!path_env) return "";
-    std::string path(path_env);
     std::string best;
     int best_dist = threshold + 1;
-    size_t start = 0;
-    while (start <= path.size()) {
-        size_t colon = path.find(':', start);
-        std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-        if (dir.empty()) dir = ".";
-        DIR* d = opendir(dir.c_str());
-        if (d) {
-            struct dirent* ent;
-            while ((ent = readdir(d)) != nullptr) {
-                std::string candidate = ent->d_name;
-                if (candidate == "." || candidate == "..") continue;
-                std::string full = dir + "/" + candidate;
-                struct stat st{};
-                if (stat(full.c_str(), &st) != 0 || !(st.st_mode & S_IXUSR)) continue;
-                int dist = levenshtein(name, candidate);
-                if (dist < best_dist) { best_dist = dist; best = candidate; }
-            }
-            closedir(d);
-        }
-        if (colon == std::string::npos) break;
-        start = colon + 1;
+    for (const std::string& candidate : path_executables()) {
+        // Length alone bounds the edit distance, and skipping the obvious
+        // misses keeps this off the critical path of a typo'd command.
+        if (std::labs(static_cast<long>(candidate.size()) - static_cast<long>(name.size())) >= best_dist)
+            continue;
+        int dist = edit_distance(name, candidate);
+        if (dist < best_dist) { best_dist = dist; best = candidate; }
     }
     return best_dist <= threshold ? best : "";
 }
-
-void wisp_sigint_hook(lua_State* L, lua_Debug*) {
-    lua_sethook(L, nullptr, 0, 0);
-    luaL_error(L, "interrupted");
-}
-
-void wisp_sigint_action(int sig) {
-    std::signal(sig, SIG_DFL); // a second Ctrl-C during unwind kills the process, same as lua.c
-    if (g_interrupt_L) {
-        lua_sethook(g_interrupt_L, wisp_sigint_hook,
-                    LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT, 1);
-    }
-}
-
-struct SigintGuard {
-    struct sigaction old_ {};
-    explicit SigintGuard(lua_State* L) {
-        g_interrupt_L = L;
-        struct sigaction sa {};
-        sa.sa_handler = wisp_sigint_action;
-        sigemptyset(&sa.sa_mask);
-        sigaction(SIGINT, &sa, &old_);
-    }
-    ~SigintGuard() {
-        sigaction(SIGINT, &old_, nullptr);
-        g_interrupt_L = nullptr;
-    }
-};
 
 // External stdout -> native input default coercion: split into an array of
 // line-strings, dropping the trailing empty element from a final newline.
@@ -240,6 +239,95 @@ LuaValue drain_fd_to_lines(int fd) {
     }
     if (start < buf.size()) lines.push_back(buf.substr(start));
     return LuaValue::from_lines(std::move(lines));
+}
+
+// Swaps the process's own stdin/stdout/stderr and puts them back afterwards.
+// A builtin writes to fd 1 like everything else, so this is what makes
+// `echo hi > f` and `jobs 2>/dev/null` work without forking.
+class FdSwap {
+public:
+    FdSwap() = default;
+    ~FdSwap() { restore(); }
+    FdSwap(const FdSwap&) = delete;
+    FdSwap& operator=(const FdSwap&) = delete;
+
+    void to(int target, int fd) {
+        if (target < 0 || target > 2) return;
+        if (saved_[target] < 0) {
+            if (target != STDIN_FILENO) std::fflush(target == STDERR_FILENO ? stderr : stdout);
+            saved_[target] = dup(target);
+        }
+        dup2(fd, target);
+    }
+
+    void restore() {
+        for (int i = 2; i >= 0; --i) {
+            if (saved_[i] < 0) continue;
+            if (i != STDIN_FILENO) std::fflush(i == STDERR_FILENO ? stderr : stdout);
+            dup2(saved_[i], i);
+            close(saved_[i]);
+            saved_[i] = -1;
+        }
+    }
+
+private:
+    int saved_[3] = {-1, -1, -1};
+};
+
+int open_redirect(RedirKind kind, const std::string& path) {
+    int flags = 0;
+    switch (kind) {
+        case RedirKind::In: flags = O_RDONLY; break;
+        case RedirKind::Append: flags = O_WRONLY | O_CREAT | O_APPEND; break;
+        case RedirKind::ErrToOut: return -1; // no file involved
+        default: flags = O_WRONLY | O_CREAT | O_TRUNC; break;
+    }
+    int fd = open(path.c_str(), flags, 0644);
+    if (fd < 0) std::fprintf(stderr, "wisp: %s: %s\n", path.c_str(), std::strerror(errno));
+    return fd;
+}
+
+// Wires a command's redirects onto the current process, in written order so
+// `> f 2>&1` and `2>&1 > f` differ the way they do in bash. `swap` remembers
+// the old fds for an in-process builtin; the forked-child path passes null and
+// just execs over the top.
+bool apply_redirects(const std::vector<std::pair<RedirKind, std::string>>& rs, FdSwap* swap) {
+    auto wire = [&](int target, int fd) {
+        if (swap) swap->to(target, fd);
+        else dup2(fd, target);
+    };
+    for (auto& r : rs) {
+        if (r.first == RedirKind::ErrToOut) {
+            wire(STDERR_FILENO, STDOUT_FILENO);
+            continue;
+        }
+        int fd = open_redirect(r.first, r.second);
+        if (fd < 0) return false;
+        switch (r.first) {
+            case RedirKind::In: wire(STDIN_FILENO, fd); break;
+            case RedirKind::ErrOut: wire(STDERR_FILENO, fd); break;
+            case RedirKind::OutErr: wire(STDOUT_FILENO, fd); wire(STDERR_FILENO, fd); break;
+            default: wire(STDOUT_FILENO, fd); break;
+        }
+        close(fd);
+    }
+    return true;
+}
+
+// NAME=value, with NAME a shell identifier -- `FOO=bar cmd`, not `a=b` inside
+// a longer word or `--opt=x`.
+bool is_assignment(const std::string& s) {
+    size_t eq = s.find('=');
+    if (eq == 0 || eq == std::string::npos) return false;
+    if (std::isdigit(static_cast<unsigned char>(s[0]))) return false;
+    for (size_t i = 0; i < eq; ++i)
+        if (!std::isalnum(static_cast<unsigned char>(s[i])) && s[i] != '_') return false;
+    return true;
+}
+
+void apply_assignment(const std::string& kv) {
+    size_t eq = kv.find('=');
+    setenv(kv.substr(0, eq).c_str(), kv.substr(eq + 1).c_str(), 1);
 }
 
 std::string describe_pipeline(const Pipeline& pl) {
@@ -326,25 +414,29 @@ int Executor::run_and_or(const AndOr& ao, bool background) {
 }
 
 std::string Executor::expand_word(const Word& w) {
-    if (w.literal) return w.text; // single-quoted: never expanded
+    if (w.literal()) return w.text; // fully single-quoted: never expanded
 
-    std::string in = w.text;
-    if (!in.empty() && in[0] == '~' && (in.size() == 1 || in[1] == '/')) {
+    std::string in = w.text, prot = w.prot;
+    if (!in.empty() && in[0] == '~' && prot[0] == '0' && (in.size() == 1 || in[1] == '/')) {
         const char* home = std::getenv("HOME");
-        if (home) in = std::string(home) + in.substr(1);
+        if (home) {
+            in = home + in.substr(1);
+            prot = std::string(std::strlen(home), '0') + prot.substr(1);
+        }
     }
 
     std::string out;
     size_t i = 0;
     while (i < in.size()) {
         char c = in[i];
-        if (c != '$' || i + 1 >= in.size()) { out += c; ++i; continue; }
+        // A '$' that was quoted or backslash-escaped is just a dollar sign.
+        if (c != '$' || i + 1 >= in.size() || prot[i] == '1') { out += c; ++i; continue; }
         char next = in[i + 1];
         if (next == '?') {
             out += std::to_string(last_status_);
             i += 2;
         } else if (next == '(') {
-            size_t close = in.find(')', i + 2);
+            size_t close = match_paren(in, i + 1);
             if (close == std::string::npos) { out += c; ++i; continue; }
             out += run_command_substitution(in.substr(i + 2, close - (i + 2)));
             i = close + 1;
@@ -379,7 +471,7 @@ std::string Executor::expand_word(const Word& w) {
 
 std::vector<std::string> Executor::expand_words(const Word& w) {
     std::string expanded = expand_word(w);
-    if (w.literal) return {expanded};
+    if (w.literal()) return {expanded};
 
     // brace expansion first
     auto braced = brace_expand(expanded);
@@ -400,6 +492,7 @@ std::vector<std::string> Executor::expand_words(const Word& w) {
 std::string Executor::run_command_substitution(const std::string& inner) {
     int pipefd[2];
     if (pipe(pipefd) != 0) return "";
+    std::fflush(nullptr); // else the child inherits a copy of our pending output
     pid_t pid = fork();
     if (pid == 0) {
         close(pipefd[0]);
@@ -410,6 +503,13 @@ std::string Executor::run_command_substitution(const std::string& inner) {
         signal(SIGTSTP, SIG_DFL);
         signal(SIGTTIN, SIG_DFL);
         signal(SIGTTOU, SIG_DFL);
+        // A subshell does no job control. Left interactive, an external
+        // command in here would tcsetpgrp() the terminal over to its own
+        // process group, and nothing would ever hand it back -- the real
+        // shell would then read from stdin while in a background group and
+        // get EIO, which looks exactly like EOF and quietly ends the session.
+        interactive_ = false;
+        jobs_.clear();
         int rc = 0;
         try {
             rc = run_line(parse_line(inner));
@@ -417,6 +517,9 @@ std::string Executor::run_command_substitution(const std::string& inner) {
             std::fprintf(stderr, "%s\n", e.what());
             rc = 2;
         }
+        // Builtins write through stdio, and stdout is a fully-buffered pipe
+        // here -- _exit() would drop everything they produced.
+        std::fflush(nullptr);
         _exit(rc);
     }
     close(pipefd[1]);
@@ -443,6 +546,21 @@ std::vector<ExpCmd> Executor::expand_and_classify(const Pipeline& pl) {
         }
         ec.redirects = c.redirects;
 
+        // Leading NAME=value words set the environment rather than naming the
+        // command. With nothing left after them the assignment *is* the
+        // command, which is exactly what `export` already does.
+        size_t lead = 0;
+        while (lead < ec.argv.size() && is_assignment(ec.argv[lead])) ++lead;
+        if (lead > 0) {
+            ec.assignments.assign(ec.argv.begin(), ec.argv.begin() + static_cast<long>(lead));
+            ec.argv.erase(ec.argv.begin(), ec.argv.begin() + static_cast<long>(lead));
+            if (ec.argv.empty()) {
+                ec.argv.push_back("export");
+                ec.argv.insert(ec.argv.end(), ec.assignments.begin(), ec.assignments.end());
+                ec.assignments.clear();
+            }
+        }
+
         if (!ec.argv.empty() && ec.argv[0] == "command" && ec.argv.size() > 1) {
             // Escape hatch past a same-named Lua function: force external.
             ec.argv.erase(ec.argv.begin());
@@ -456,27 +574,75 @@ std::vector<ExpCmd> Executor::expand_and_classify(const Pipeline& pl) {
 }
 
 LuaValue Executor::run_native_run(const std::vector<ExpCmd>& cmds, const std::vector<int>& idx,
-                                   LuaValue input, bool has_input) {
-    SigintGuard guard(L_);
-    LuaValue v = std::move(input);
-    bool last_was_luafn = false;
+                                   const LuaValue& input, bool has_input) {
+    lua_env::InterruptGuard guard(L_);
+
+    // The value flowing through the run lives on the Lua stack, not in a
+    // LuaValue: a round trip through C++ between every pair of stages would
+    // deep-copy every record twice per stage, which is precisely the cost
+    // structured pipelines exist to avoid. It crosses the boundary once on
+    // the way in and once on the way out.
+    const int base = lua_gettop(L_);
+    struct StackReset {
+        lua_State* L;
+        int base;
+        ~StackReset() { lua_settop(L, base); }
+    } reset{L_, base};
+
+    if (has_input) lua_env::push_value(L_, input);
+
+    // When this run ends the pipeline there is no downstream stage, so the
+    // final value never has to be materialised in C++ at all.
+    const bool tail_of_pipeline = !idx.empty() && static_cast<size_t>(idx.back()) + 1 == cmds.size();
+
     for (int i : idx) {
         const ExpCmd& ec = cmds[i];
+        bool last_in_pipeline = (static_cast<size_t>(i) + 1 == cmds.size());
+        for (auto& kv : ec.assignments) apply_assignment(kv);
+
+        std::vector<std::pair<RedirKind, std::string>> redirs;
+        for (auto& r : ec.redirects) redirs.emplace_back(r.kind, expand_word(r.target));
+
+        // A builtin feeding a later stage has to hand over its bytes rather
+        // than print them. Temp file, not an OS pipe: nobody is draining the
+        // other end yet, so anything over 64K would deadlock.
+        FILE* capture = (!last_in_pipeline && ec.kind == CmdKind::Builtin) ? std::tmpfile() : nullptr;
+
+        FdSwap swap;
+        if (capture) swap.to(STDOUT_FILENO, fileno(capture));
+        if (!apply_redirects(redirs, &swap)) {
+            last_status_ = 1;
+            if (capture) std::fclose(capture);
+            continue;
+        }
+
         if (ec.kind == CmdKind::Builtin) {
             last_status_ = run_builtin(ec.argv);
-            last_was_luafn = false;
         } else {
             std::vector<std::string> args(ec.argv.begin() + 1, ec.argv.end());
-            v = lua_env::call_lua_function(L_, ec.argv[0], args, v, has_input);
+            lua_env::call_lua_function_top(L_, ec.argv[0], args, has_input);
             has_input = true;
-            last_was_luafn = true;
+            last_status_ = (lua_isnil(L_, -1) || (lua_isboolean(L_, -1) && !lua_toboolean(L_, -1))) ? 1 : 0;
+            // Rendered here, inside the redirect, so `f > out` catches the
+            // returned value and anything the function printed alike.
+            if (last_in_pipeline) {
+                std::string rendered = lua_env::render_value(lua_env::pull_value(L_, -1));
+                std::fwrite(rendered.data(), 1, rendered.size(), stdout);
+            }
+        }
+
+        std::fflush(stdout);
+        swap.restore();
+
+        if (capture) {
+            std::rewind(capture);
+            lua_settop(L_, base); // the builtin's bytes replace whatever was flowing
+            lua_env::push_value(L_, drain_fd_to_lines(fileno(capture)));
+            has_input = true;
+            std::fclose(capture);
         }
     }
-    if (last_was_luafn) {
-        bool falsy = v.type == LuaValue::Type::Nil || (v.type == LuaValue::Type::Bool && !v.b);
-        last_status_ = falsy ? 1 : 0;
-    }
-    return v;
+    return (has_input && !tail_of_pipeline) ? lua_env::pull_value(L_, -1) : LuaValue::nil();
 }
 
 int Executor::run_builtin(const std::vector<std::string>& argv) {
@@ -488,17 +654,25 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         else { const char* home = std::getenv("HOME"); target = home ? home : "/"; }
         if (target == "-") {
             if (prev_dir_.empty()) {
+                if (const char* old = std::getenv("OLDPWD")) prev_dir_ = old;
+            }
+            if (prev_dir_.empty()) {
                 std::fprintf(stderr, "wisp: cd: OLDPWD not set\n");
                 return 1;
             }
             target = prev_dir_;
         }
-        char cwd[1024];
-        if (getcwd(cwd, sizeof cwd)) prev_dir_ = cwd;
+        char cwd[4096];
+        std::string from = getcwd(cwd, sizeof cwd) ? cwd : "";
         if (chdir(target.c_str()) != 0) {
             std::fprintf(stderr, "wisp: cd: %s: %s\n", target.c_str(), std::strerror(errno));
             return 1;
         }
+        prev_dir_ = from;
+        // Keep $PWD/$OLDPWD honest -- a prompt() reading them, or any child
+        // process, otherwise sees whatever directory the shell started in.
+        if (!from.empty()) setenv("OLDPWD", from.c_str(), 1);
+        if (getcwd(cwd, sizeof cwd)) setenv("PWD", cwd, 1);
         return 0;
     }
     if (name == "exit") {
@@ -576,6 +750,11 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
                 if (killpg(j->pgid, sig) != 0) {
                     std::fprintf(stderr, "wisp: kill: %s: %s\n", spec.c_str(), std::strerror(errno));
                     rc = 1;
+                } else if (j->all_stopped() && sig != SIGKILL && sig != SIGSTOP && sig != SIGCONT) {
+                    // A stopped process never gets to act on the signal it was
+                    // just sent; nudge it back onto the CPU so it can die.
+                    killpg(j->pgid, SIGCONT);
+                    for (auto& p : j->procs) p.stopped = false;
                 }
             } else {
                 pid_t pid = static_cast<pid_t>(std::atoi(spec.c_str()));
@@ -699,96 +878,68 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
             return 1;
         }
         const std::string& cmd = argv[1];
-        // check builtins
-        if (is_builtin_name(cmd)) {
-            std::printf("%s is a shell builtin\n", cmd.c_str());
-            return 0;
+        switch (lua_env::resolve_command(L_, cmd)) {
+            case CmdKind::Builtin: std::printf("%s is a shell builtin\n", cmd.c_str()); return 0;
+            case CmdKind::LuaFn: std::printf("%s is a Lua function\n", cmd.c_str()); return 0;
+            case CmdKind::External: break;
         }
-        // check lua functions
-        lua_getglobal(L_, cmd.c_str());
-        if (lua_isfunction(L_, -1)) {
-            std::printf("%s is a Lua function\n", cmd.c_str());
-            lua_pop(L_, 1);
+        if (std::string full = which(cmd); !full.empty()) {
+            std::printf("%s is %s\n", cmd.c_str(), full.c_str());
             return 0;
-        }
-        lua_pop(L_, 1);
-        // check PATH
-        const char* path_env = std::getenv("PATH");
-        if (path_env) {
-            std::string path(path_env);
-            size_t start = 0;
-            while (start <= path.size()) {
-                size_t colon = path.find(':', start);
-                std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-                if (dir.empty()) dir = ".";
-                std::string full = dir + "/" + cmd;
-                struct stat st{};
-                if (stat(full.c_str(), &st) == 0 && (st.st_mode & S_IXUSR)) {
-                    std::printf("%s is %s\n", cmd.c_str(), full.c_str());
-                    return 0;
-                }
-                if (colon == std::string::npos) break;
-                start = colon + 1;
-            }
         }
         std::fprintf(stderr, "wisp: type: %s: not found\n", cmd.c_str());
         return 1;
     }
 
-    if (name == "pkg") {
-        if (argv.size() < 2) {
-            std::fprintf(stderr, "Usage: pkg <command> [args]\n");
-            std::fprintf(stderr, "Commands:\n");
-            std::fprintf(stderr, "  install <package>  Install a package\n");
-            std::fprintf(stderr, "  update [package]   Update packages\n");
-            std::fprintf(stderr, "  remove <package>   Remove a package\n");
-            std::fprintf(stderr, "  list               List installed packages\n");
-            std::fprintf(stderr, "  search <query>     Search for packages\n");
-            std::fprintf(stderr, "  info <package>     Show package information\n");
-            return 1;
-        }
-        
-        const std::string& subcmd = argv[1];
-        
-        if (subcmd == "init") {
-            pkg_manager::init();
-            return 0;
-        } else if (subcmd == "install") {
-            if (argv.size() < 3) {
-                std::fprintf(stderr, "Usage: pkg install <package_name>\n");
-                return 1;
-            }
-            return pkg_manager::install(argv[2]);
-        } else if (subcmd == "update") {
-            std::string package = (argv.size() > 2) ? argv[2] : "";
-            return pkg_manager::update(package);
-        } else if (subcmd == "remove") {
-            if (argv.size() < 3) {
-                std::fprintf(stderr, "Usage: pkg remove <package_name>\n");
-                return 1;
-            }
-            return pkg_manager::remove(argv[2]);
-        } else if (subcmd == "list") {
-            return pkg_manager::list();
-        } else if (subcmd == "search") {
-            if (argv.size() < 3) {
-                std::fprintf(stderr, "Usage: pkg search <query>\n");
-                return 1;
-            }
-            return pkg_manager::search(argv[2]);
-        } else if (subcmd == "info") {
-            if (argv.size() < 3) {
-                std::fprintf(stderr, "Usage: pkg info <package_name>\n");
-                return 1;
-            }
-            return pkg_manager::info(argv[2]);
-        } else {
-            std::fprintf(stderr, "Unknown pkg command: %s\n", subcmd.c_str());
-            return 1;
-        }
-    }
+    if (name == "pkg") return run_pkg(argv);
 
     return 1; // unreachable: is_builtin_name() gates entry to this function
+}
+
+// `pkg` is a spelling of luarocks, not a package manager of its own: rocks
+// land in the tree lua_env.cpp already puts on package.path, so `require()`
+// picks them up. Forked rather than system()'d so a package name can't reach
+// /bin/sh as syntax.
+int Executor::run_pkg(const std::vector<std::string>& argv) {
+    static const std::pair<const char*, const char*> kSubcmds[] = {
+        {"install", "install"}, {"remove", "remove"}, {"list", "list"},
+        {"search", "search"},   {"info", "show"},     {"update", "install"},
+    };
+
+    if (argv.size() < 2) {
+        std::fprintf(stderr, "usage: pkg install|remove|update <rock> | list | search <query> | info <rock>\n");
+        return 1;
+    }
+    const char* mapped = nullptr;
+    for (auto& s : kSubcmds)
+        if (argv[1] == s.first) mapped = s.second;
+    if (!mapped) {
+        std::fprintf(stderr, "wisp: pkg: %s: unknown command\n", argv[1].c_str());
+        return 1;
+    }
+    if (which("luarocks").empty()) {
+        std::fprintf(stderr, "wisp: pkg: luarocks not found on $PATH (install your distro's luarocks package)\n");
+        return 1;
+    }
+
+    // Pinned to the Lua we linked against: a luarocks defaulting to another
+    // version would install somewhere require() is never going to look.
+    std::vector<std::string> cmd = {"luarocks", "--local", "--lua-version=" LUA_VDIR, mapped};
+    cmd.insert(cmd.end(), argv.begin() + 2, argv.end());
+
+    std::fflush(nullptr);
+    pid_t pid = fork();
+    if (pid < 0) return 1;
+    if (pid == 0) {
+        std::vector<char*> c_argv;
+        for (auto& a : cmd) c_argv.push_back(const_cast<char*>(a.c_str()));
+        c_argv.push_back(nullptr);
+        execvp(c_argv[0], c_argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
 ShellJob* Executor::find_job(int id) {
@@ -916,29 +1067,10 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
                 has_input = true;
             }
 
+            // Display of a final value happens inside run_native_run, where
+            // the command's own redirects are still in force.
             LuaValue out = run_native_run(cmds, seg.idx, input, has_input);
-
-            const ExpCmd& last_cmd = cmds[seg.idx.back()];
-            // A run ending in a plain builtin (cd/export/jobs/...) has
-            // nothing meaningful to show -- `out` is just the untouched
-            // nil/passthrough value, not real user data. Only a LuaFn as
-            // the final stage produces something worth rendering.
-            if (is_last && last_cmd.kind == CmdKind::LuaFn) {
-                std::string rendered = lua_env::render_value(out);
-                bool wrote_to_file = false;
-                for (auto& r : last_cmd.redirects) {
-                    if (r.kind == RedirKind::Out || r.kind == RedirKind::Append) {
-                        std::string path = expand_word(r.target);
-                        FILE* f = std::fopen(path.c_str(), r.kind == RedirKind::Append ? "a" : "w");
-                        if (f) {
-                            std::fwrite(rendered.data(), 1, rendered.size(), f);
-                            std::fclose(f);
-                        }
-                        wrote_to_file = true;
-                    }
-                }
-                if (!wrote_to_file) std::fwrite(rendered.data(), 1, rendered.size(), stdout);
-            } else if (!is_last) {
+            if (!is_last) {
                 carry = Carry{};
                 carry.kind = Carry::Kind::Value;
                 carry.value = std::move(out);
@@ -968,6 +1100,12 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
         int out_pipe[2] = {-1, -1};
         if (!is_last) pipe(out_pipe);
 
+        // Expanded before the fork: a $(...) in a redirect target runs its own
+        // subshell, and that belongs to us, not to the child.
+        std::vector<std::pair<RedirKind, std::string>> redirs;
+        for (auto& r : ec.redirects) redirs.emplace_back(r.kind, expand_word(r.target));
+
+        std::fflush(nullptr);
         pid_t pid = fork();
         if (pid == 0) {
             pid_t pg = (job.pgid == -1) ? 0 : job.pgid;
@@ -986,28 +1124,8 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
             if (in_fd != -1) close(in_fd);
             if (!is_last) { close(out_pipe[0]); close(out_pipe[1]); }
 
-            for (auto& r : ec.redirects) {
-                if (r.kind == RedirKind::ErrToOut) {
-                    dup2(STDOUT_FILENO, STDERR_FILENO);
-                    continue;
-                }
-                std::string path = expand_word(r.target);
-                int flags = 0, fd_target = -1;
-                switch (r.kind) {
-                    case RedirKind::In: flags = O_RDONLY; fd_target = STDIN_FILENO; break;
-                    case RedirKind::Out: flags = O_WRONLY | O_CREAT | O_TRUNC; fd_target = STDOUT_FILENO; break;
-                    case RedirKind::Append: flags = O_WRONLY | O_CREAT | O_APPEND; fd_target = STDOUT_FILENO; break;
-                    case RedirKind::ErrOut: flags = O_WRONLY | O_CREAT | O_TRUNC; fd_target = STDERR_FILENO; break;
-                    case RedirKind::ErrToOut: break; // handled above
-                }
-                int fd = open(path.c_str(), flags, 0644);
-                if (fd < 0) {
-                    std::fprintf(stderr, "wisp: %s: %s\n", path.c_str(), std::strerror(errno));
-                    _exit(1);
-                }
-                dup2(fd, fd_target);
-                close(fd);
-            }
+            if (!apply_redirects(redirs, nullptr)) _exit(1);
+            for (auto& kv : ec.assignments) apply_assignment(kv);
 
             std::vector<char*> argv_c;
             argv_c.reserve(ec.argv.size() + 1);

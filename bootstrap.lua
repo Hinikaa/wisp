@@ -1,189 +1,102 @@
 #!/usr/bin/env lua
--- bootstrap.lua -- build script for wisp
+-- bootstrap.lua -- build wisp without make
 -- usage: lua bootstrap.lua [build|test|clean|help]
-
-local function run(cmd)
-    io.write("  > " .. cmd .. "\n")
-    io.flush()
-    return os.execute(cmd)
-end
-
-local function popen_read(cmd)
-    local h = io.popen(cmd)
-    if not h then return nil end
-    local s = h:read("*a")
-    h:close()
-    return s and s:gsub("%s+$", "")
-end
-
-local function find_lua()
-    for _, pkg in ipairs({"lua5.4", "lua-5.4", "lua54", "lua"}) do
-        local ver = popen_read("pkg-config --modversion " .. pkg .. " 2>/dev/null")
-        if ver then
-            local cf = popen_read("pkg-config --cflags " .. pkg .. " 2>/dev/null")
-            local li = popen_read("pkg-config --libs " .. pkg .. " 2>/dev/null")
-            if cf and li then
-                return {pkg = pkg, version = ver, cflags = cf, libs = li}
-            end
-        end
-    end
-    return nil
-end
 
 local CXX = os.getenv("CXX") or "g++"
 local CC = os.getenv("CC") or "cc"
 local FLAGS = "-std=c++17 -O2 -Wall -Wextra"
 
-local function newer_than(target, source)
-    local ta = io.popen("stat -c %Y " .. target .. " 2>/dev/null")
-    if not ta then return true end
-    local raw = ta:read("*a")
-    ta:close()
-    local ts = tonumber(raw and raw:match("^%s*(.-)%s*$") or "")
-    if not ts then return true end
-    local sa = io.popen("stat -c %Y " .. source .. " 2>/dev/null")
-    if not sa then return true end
-    raw = sa:read("*a")
-    sa:close()
-    local ss = tonumber(raw and raw:match("^%s*(.-)%s*$") or "")
-    if not ss then return true end
-    return ss > ts
+local SRCS = {"main", "lexer", "parser", "executor", "lua_env"}
+local HEADERS = "builtins.h executor.h lexer.h linenoise.h lua_env.h parser.h"
+local TESTS = {
+    test_lexer = "lexer.o",
+    test_parser = "parser.o lexer.o",
+    test_lua_env = "lua_env.o",
+    test_executor = "executor.o lua_env.o parser.o lexer.o",
+}
+
+local function sh(cmd) return os.execute(cmd) end
+
+local function run(cmd)
+    io.write("  > " .. cmd .. "\n")
+    io.flush()
+    return sh(cmd)
 end
 
-local function build(lua_info)
-    print("building wisp (" .. lua_info.pkg .. " " .. lua_info.version .. ")")
+-- Rebuild when the target is missing or any input is newer. `test -nt` does
+-- the timestamp comparison the shell already knows how to do.
+local function stale(target, inputs)
+    if not sh("test -f " .. target) then return true end
+    return sh("test -n \"$(find " .. inputs .. " -newer " .. target .. " 2>/dev/null)\"")
+end
 
-    local steps = {
-        {out = "main.o",       cmd = ("%s %s %s -c main.cpp -o main.o"):format(CXX, FLAGS, lua_info.cflags),
-         deps = {"main.cpp", "executor.h", "lua_env.h", "linenoise.h"}},
-        {out = "lexer.o",      cmd = ("%s %s -c lexer.cpp -o lexer.o"):format(CXX, FLAGS),
-         deps = {"lexer.cpp", "lexer.h"}},
-        {out = "parser.o",     cmd = ("%s %s -c parser.cpp -o parser.o"):format(CXX, FLAGS),
-         deps = {"parser.cpp", "parser.h", "lexer.h"}},
-        {out = "executor.o",   cmd = ("%s %s %s -c executor.cpp -o executor.o"):format(CXX, FLAGS, lua_info.cflags),
-         deps = {"executor.cpp", "executor.h", "lua_env.h", "parser.h", "builtins.h", "pkg_manager.h"}},
-        {out = "lua_env.o",    cmd = ("%s %s %s -c lua_env.cpp -o lua_env.o"):format(CXX, FLAGS, lua_info.cflags),
-         deps = {"lua_env.cpp", "lua_env.h", "builtins.h"}},
-        {out = "pkg_manager.o", cmd = ("%s %s -c pkg_manager.cpp -o pkg_manager.o"):format(CXX, FLAGS),
-         deps = {"pkg_manager.cpp", "pkg_manager.h"}},
-        {out = "linenoise.o",  cmd = ("%s -O2 -Wall -c linenoise.c -o linenoise.o"):format(CC),
-         deps = {"linenoise.c", "linenoise.h"}},
-        {out = "wisp",         cmd = ("%s %s -o wisp main.o lexer.o parser.o executor.o lua_env.o linenoise.o pkg_manager.o %s -lpthread"):format(CXX, FLAGS, lua_info.libs),
-         deps = {"main.o", "lexer.o", "parser.o", "executor.o", "lua_env.o", "linenoise.o", "pkg_manager.o"}},
-    }
+local function lua_flags()
+    for _, pkg in ipairs({"lua5.4", "lua-5.4", "lua54", "lua"}) do
+        local h = io.popen("pkg-config --cflags --libs " .. pkg .. " 2>/dev/null")
+        local out = h and h:read("*a") or ""
+        if h then h:close() end
+        if out:match("%S") then return (out:gsub("%s+", " ")) end
+    end
+    io.stderr:write("error: lua 5.4 not found via pkg-config\n")
+    os.exit(1)
+end
 
-    for _, step in ipairs(steps) do
-        local need = false
-        local chk = io.popen("test -f " .. step.out .. " 2>/dev/null && echo y")
-        local exists = chk:read("*a")
-        chk:close()
-        if not exists or not exists:match("y") then
-            need = true
-        else
-            for _, dep in ipairs(step.deps) do
-                if newer_than(step.out, dep) then
-                    need = true
-                    break
-                end
-            end
-        end
-        if need then
-            if not run(step.cmd) then return false end
-        else
-            io.write("  ~ " .. step.out .. " (up to date)\n")
+local function build(lua)
+    local objs = {}
+    for _, src in ipairs(SRCS) do
+        local obj = src .. ".o"
+        objs[#objs + 1] = obj
+        if stale(obj, src .. ".cpp " .. HEADERS) then
+            if not run(("%s %s %s -c %s.cpp -o %s"):format(CXX, FLAGS, lua, src, obj)) then return false end
         end
     end
+    if stale("linenoise.o", "linenoise.c linenoise.h") then
+        if not run(("%s -O2 -Wall -c linenoise.c -o linenoise.o"):format(CC)) then return false end
+    end
+    objs[#objs + 1] = "linenoise.o"
 
+    local all = table.concat(objs, " ")
+    if stale("wisp", all) then
+        if not run(("%s %s -o wisp %s %s -lpthread"):format(CXX, FLAGS, all, lua)) then return false end
+    end
     print("done: ./wisp")
     return true
 end
 
-local function test(lua_info)
-    local f = io.open("wisp")
-    if f then
-        f:close()
-    else
-        if not build(lua_info) then return false end
-    end
-
-    local cases = {
-        {bin = "test_lexer",    link = " lexer.o",                   lua = false},
-        {bin = "test_parser",   link = " parser.o lexer.o",          lua = false},
-        {bin = "test_lua_env",  link = " lua_env.o " .. lua_info.libs, lua = true},
-        {bin = "test_executor", link = " executor.o lua_env.o parser.o lexer.o pkg_manager.o " .. lua_info.libs .. " -lpthread", lua = true},
-    }
-
+local function test(lua)
+    if not build(lua) then return false end
     local passed, failed = 0, 0
-    for _, t in ipairs(cases) do
-        local lua_flag = t.lua and (lua_info.cflags .. " " .. lua_info.libs) or ""
-        local cmd = ("%s %s %s -o %s %s.cpp%s"):format(CXX, FLAGS, lua_flag, t.bin, t.bin, t.link)
-        if not run(cmd) then
-            failed = failed + 1
-        else
-            io.flush()
-            local ok = os.execute("./" .. t.bin .. " 2>&1")
-            if ok then
-                passed = passed + 1
-            else
-                failed = failed + 1
-            end
-        end
+    for bin, objs in pairs(TESTS) do
+        local ok = run(("%s %s %s -o %s %s.cpp %s -lpthread"):format(CXX, FLAGS, lua, bin, bin, objs))
+                   and sh("./" .. bin)
+        if ok then passed = passed + 1 else failed = failed + 1 end
     end
-
-    print(("%d/%d tests passed"):format(passed, passed + failed))
+    for _, suite in ipairs({"sh test_shell.sh", "python3 test_interactive.py"}) do
+        if sh(suite) then passed = passed + 1 else failed = failed + 1 end
+    end
+    print(("%d/%d test suites passed"):format(passed, passed + failed))
     return failed == 0
 end
 
 local function clean()
-    print("cleaning")
-    run("rm -f *.o wisp test_lexer test_parser test_lua_env test_executor")
+    run("rm -f *.o *.d wisp test_lexer test_parser test_lua_env test_executor")
     return true
 end
 
 local function help()
-    print([[usage: lua bootstrap.lua <command>
-
-commands:
-  build   compile wisp
-  test    build and run all tests
-  clean   remove build artifacts
-  help    show this message
-
-environment:
-  CXX     c++ compiler (default: g++)
-  CC      c compiler  (default: cc)
-
-features:
-  builtins: cd, exit, export, command, jobs, fg, bg, kill,
-            source, echo, disown, wait, pwd, type, pkg
-  package management: pkg install/remove/list/search/info/update
-  structured pipelines: lua tables between native stages
-  job control: fg/bg/kill/disown/wait]])
+    print("usage: lua bootstrap.lua build|test|clean|help   (env: CXX, CC)")
     return true
 end
 
-local cmds = {build = build, test = test, clean = clean, help = help}
-local arg = arg or {}
-local cmd = arg[1] or "help"
+local cmd = (arg or {})[1] or "help"
+local needs_lua = {build = build, test = test}
+local plain = {clean = clean, help = help, ["--help"] = help, ["-h"] = help}
 
-if cmd == "help" or cmd == "--help" or cmd == "-h" then
-    help()
-    os.exit(0)
+if needs_lua[cmd] then
+    os.exit(needs_lua[cmd](lua_flags()) and 0 or 1)
+elseif plain[cmd] then
+    os.exit(plain[cmd]() and 0 or 1)
 end
 
-if not cmds[cmd] then
-    io.stderr:write("bootstrap.lua: unknown command '" .. cmd .. "'\n")
-    io.stderr:write("run 'lua bootstrap.lua help' for usage\n")
-    os.exit(1)
-end
-
-if cmd ~= "clean" and cmd ~= "help" then
-    local lua_info = find_lua()
-    if not lua_info then
-        io.stderr:write("error: lua not found via pkg-config\n")
-        os.exit(1)
-    end
-    if not cmds[cmd](lua_info) then os.exit(1) end
-else
-    cmds[cmd]()
-end
+io.stderr:write("bootstrap.lua: unknown command '" .. cmd .. "'; try 'help'\n")
+os.exit(1)

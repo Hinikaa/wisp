@@ -9,17 +9,21 @@
 //   line     := job (job_sep job)* job_sep?      job_sep := ';' | '&'
 //   job      := pipeline (('&&'|'||') pipeline)*
 //   pipeline := command ('|' command)*
-//   command  := word+ redirect*                  redirect: < > >> 2>
+//   command  := word+ redirect*                  redirect: < > >> 2> 2>&1 &>
 //
 // Pure: builds an AST from tokens, no expansion, no execution. $VAR/$(cmd)
 // expansion happens later in executor.cpp, at execution time.
 
+// Carries the lexer's per-character protection mask through to expansion time;
+// see Token::prot.
 struct Word {
     std::string text;
-    bool literal = false; // single-quoted: never expanded
+    std::string prot;
+
+    bool literal() const { return prot.find('0') == std::string::npos; }
 };
 
-enum class RedirKind { In, Out, Append, ErrOut, ErrToOut };
+enum class RedirKind { In, Out, Append, ErrOut, ErrToOut, OutErr };
 
 struct Redirect {
     RedirKind kind;

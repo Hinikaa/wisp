@@ -39,9 +39,15 @@ std::string format_job_line(const ShellJob& j);
 // grouping below is testable without forking anything.
 struct ExpCmd {
     std::vector<std::string> argv;
+    std::vector<std::string> assignments; // leading NAME=value words, stripped off argv
     std::vector<Redirect> redirects;
     CmdKind kind = CmdKind::External;
 };
+
+// `{a,b}` -> {"a","b"}, `{1..3}` -> {"1","2","3"}, nested and concatenated
+// groups included. A brace group with neither a comma nor a range is left
+// alone, so `HEAD@{1}` and `awk {print}` survive.
+std::vector<std::string> brace_expand(const std::string& s);
 
 struct Segment {
     bool native = false;   // Builtin/LuaFn run in-process, chaining Lua values
@@ -72,6 +78,7 @@ public:
     void reap_background();
 
     int last_status() const { return last_status_; }
+    void set_status(int s) { last_status_ = s; }
 
 private:
     int run_line(const Line& line);
@@ -85,8 +92,9 @@ private:
 
     std::vector<ExpCmd> expand_and_classify(const Pipeline& pl);
     LuaValue run_native_run(const std::vector<ExpCmd>& cmds, const std::vector<int>& idx,
-                             LuaValue input, bool has_input);
+                             const LuaValue& input, bool has_input);
     int run_builtin(const std::vector<std::string>& argv);
+    int run_pkg(const std::vector<std::string>& argv);
 
     void put_job_in_foreground(ShellJob& job);
     void wait_for_job(ShellJob& job);

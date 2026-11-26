@@ -7,12 +7,15 @@ PREFIX ?= /usr/local
 # It costs binary size and gives back resident memory. Both flags are probed,
 # so a toolchain without them still builds; `make STATIC_CXX= LTO=` opts out
 # for a ~180K binary instead of ~390K.
+comma := ,
 probe = $(shell echo 'int main(){}' | $(CXX) -x c++ $(1) -o /dev/null - 2>/dev/null && echo '$(1)')
 STATIC_CXX ?= $(call probe,-static-libstdc++ -static-libgcc)
 LTO ?= $(or $(call probe,-flto=auto),$(call probe,-flto))
+GC_CFLAGS ?= $(call probe,-fdata-sections -ffunction-sections)
+GC_LDFLAGS ?= $(call probe,-Wl$(comma)--gc-sections)
 
-CXXFLAGS = -std=c++17 -O2 $(LTO) -Wall -Wextra -MMD -MP
-LDFLAGS += $(LTO) $(STATIC_CXX)
+CXXFLAGS = -std=c++17 -O2 $(LTO) $(GC_CFLAGS) -Wall -Wextra -MMD -MP
+LDFLAGS += $(LTO) $(GC_LDFLAGS) $(STATIC_CXX)
 
 LUA_PKG := $(shell for p in lua5.4 lua-5.4 lua54 lua; do pkg-config --exists $$p 2>/dev/null && echo $$p && break; done)
 ifeq ($(LUA_PKG),)

@@ -82,60 +82,105 @@ bool expand_range(const std::string& inner, std::vector<std::string>& out) {
     return true;
 }
 
-// Depth-0 comma split of a brace group's contents.
-bool split_alternatives(const std::string& inner, std::vector<std::string>& out) {
-    std::string current;
+// Depth-0 comma split of a brace group's contents (unquoted characters only).
+bool split_alternatives_word(const Word& inner, std::vector<Word>& out) {
+    Word current;
     int depth = 0;
     bool saw_comma = false;
-    for (char c : inner) {
-        if (c == '{') ++depth;
-        else if (c == '}') --depth;
-        if (c == ',' && depth == 0) {
+    for (size_t i = 0; i < inner.text.size(); ++i) {
+        char c = inner.text[i];
+        char p = inner.prot[i];
+        if (p == '0') {
+            if (c == '{') ++depth;
+            else if (c == '}') --depth;
+        }
+        if (c == ',' && p == '0' && depth == 0) {
             saw_comma = true;
-            out.push_back(current);
-            current.clear();
+            out.push_back(std::move(current));
+            current = Word{};
         } else {
-            current += c;
+            current.text += c;
+            current.prot += p;
         }
     }
     if (!saw_comma) return false;
-    out.push_back(current);
+    out.push_back(std::move(current));
     return true;
+}
+
+bool expand_range_word(const Word& inner, std::vector<Word>& out) {
+    if (inner.prot.find_first_not_of('0') != std::string::npos) return false;
+    std::vector<std::string> raw;
+    if (!expand_range(inner.text, raw)) return false;
+    out.reserve(raw.size());
+    for (auto& s : raw) {
+        std::string p(s.size(), '0');
+        out.push_back(Word{std::move(s), std::move(p)});
+    }
+    return true;
+}
+
+std::vector<Word> brace_expand_word(const Word& w) {
+    size_t open = std::string::npos;
+    for (size_t i = 0; i < w.text.size(); ++i) {
+        if (w.text[i] == '{' && w.prot[i] == '0') {
+            open = i;
+            break;
+        }
+    }
+    if (open == std::string::npos) return {w};
+
+    size_t close = std::string::npos;
+    int depth = 1;
+    for (size_t i = open + 1; i < w.text.size(); ++i) {
+        if (w.prot[i] == '0') {
+            if (w.text[i] == '{') ++depth;
+            else if (w.text[i] == '}') {
+                --depth;
+                if (depth == 0) {
+                    close = i;
+                    break;
+                }
+            }
+        }
+    }
+    if (close == std::string::npos) return {w};
+
+    Word before{w.text.substr(0, open), w.prot.substr(0, open)};
+    Word inner{w.text.substr(open + 1, close - open - 1), w.prot.substr(open + 1, close - open - 1)};
+    Word after{w.text.substr(close + 1), w.prot.substr(close + 1)};
+
+    // No comma and no range means this isn't a brace expansion at all --
+    // `git show HEAD@{1}` and `awk {print}` have to come through unchanged.
+    std::vector<Word> items;
+    if (!split_alternatives_word(inner, items) && !expand_range_word(inner, items)) {
+        auto rest = brace_expand_word(after);
+        std::string group_text = before.text + "{" + inner.text + "}";
+        std::string group_prot = before.prot + w.prot[open] + inner.prot + w.prot[close];
+        for (auto& r : rest) {
+            r.text = group_text + r.text;
+            r.prot = group_prot + r.prot;
+        }
+        return rest;
+    }
+
+    std::vector<Word> result;
+    for (const auto& item : items) {
+        Word combined{before.text + item.text + after.text, before.prot + item.prot + after.prot};
+        auto expanded = brace_expand_word(combined);
+        result.insert(result.end(), expanded.begin(), expanded.end());
+    }
+    return result;
 }
 
 } // namespace
 
 std::vector<std::string> brace_expand(const std::string& s) {
-    size_t open = s.find('{');
-    if (open == std::string::npos) return {s};
-
-    size_t close = std::string::npos;
-    int depth = 1;
-    for (size_t i = open + 1; i < s.size(); ++i) {
-        if (s[i] == '{') ++depth;
-        else if (s[i] == '}') { --depth; if (depth == 0) { close = i; break; } }
-    }
-    if (close == std::string::npos) return {s};
-
-    std::string before = s.substr(0, open);
-    std::string inner = s.substr(open + 1, close - open - 1);
-    std::string after = s.substr(close + 1);
-
-    // No comma and no range means this isn't a brace expansion at all --
-    // `git show HEAD@{1}` and `awk {print}` have to come through unchanged.
-    std::vector<std::string> items;
-    if (!split_alternatives(inner, items) && !expand_range(inner, items)) {
-        auto rest = brace_expand(after);
-        for (auto& r : rest) r = before + "{" + inner + "}" + r;
-        return rest;
-    }
-
-    std::vector<std::string> result;
-    for (auto& item : items) {
-        auto expanded = brace_expand(before + item + after);
-        result.insert(result.end(), expanded.begin(), expanded.end());
-    }
-    return result;
+    auto expanded = brace_expand_word(Word{s, std::string(s.size(), '0')});
+    std::vector<std::string> out;
+    out.reserve(expanded.size());
+    for (auto& w : expanded) out.push_back(std::move(w.text));
+    return out;
 }
 
 std::vector<Segment> build_segments(const std::vector<ExpCmd>& cmds) {
@@ -167,41 +212,64 @@ namespace {
 // adjacent characters counted as one edit rather than two. Worth the extra
 // row, because that is what a mistyped command usually is -- `grpe` is one
 // slip from `grep`, and plain Levenshtein rates it no closer than a dozen
-// unrelated names two substitutions away.
-int edit_distance(const std::string& a, const std::string& b) {
+// unrelated names two substitutions away. Reuses caller-owned DP rows and
+// aborts early once a row's minimum meets or exceeds `cutoff`.
+int edit_distance_bounded(const std::string& a, const std::string& b, int cutoff,
+                          std::vector<int>& prev2, std::vector<int>& prev, std::vector<int>& curr) {
     int m = static_cast<int>(a.size()), n = static_cast<int>(b.size());
-    std::vector<int> prev2(n + 1), prev(n + 1), curr(n + 1);
+    if (std::labs(static_cast<long>(m) - static_cast<long>(n)) >= cutoff) return cutoff;
+    if (static_cast<int>(prev.size()) < n + 1) {
+        prev2.resize(n + 1);
+        prev.resize(n + 1);
+        curr.resize(n + 1);
+    }
     for (int j = 0; j <= n; ++j) prev[j] = j;
     for (int i = 1; i <= m; ++i) {
         curr[0] = i;
+        int row_min = curr[0];
         for (int j = 1; j <= n; ++j) {
             int cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
-            curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost});
+            int v = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost});
             if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1])
-                curr[j] = std::min(curr[j], prev2[j - 2] + 1);
+                v = std::min(v, prev2[j - 2] + 1);
+            curr[j] = v;
+            if (v < row_min) row_min = v;
         }
+        if (row_min >= cutoff) return cutoff;
         prev2.swap(prev);
         prev.swap(curr);
     }
     return prev[n];
 }
 
-bool has_glob_chars(const std::string& s) {
-    bool in_bracket = false;
-    for (char c : s) {
-        if (c == '[') { in_bracket = true; continue; }
-        if (c == ']') { in_bracket = false; continue; }
-        if (!in_bracket && (c == '*' || c == '?')) return true;
+bool has_unquoted_glob(const Word& w) {
+    for (size_t i = 0; i < w.text.size(); ++i) {
+        if (w.prot[i] != '0') continue;
+        char c = w.text[i];
+        if (c == '*' || c == '?' || c == '[') return true;
     }
     return false;
 }
 
-std::vector<std::string> glob_expand(const std::string& pattern) {
+std::string glob_pattern_for(const Word& w) {
+    std::string pat;
+    pat.reserve(w.text.size());
+    for (size_t i = 0; i < w.text.size(); ++i) {
+        char c = w.text[i];
+        if (w.prot[i] != '0' && (c == '*' || c == '?' || c == '[' || c == ']' || c == '\\')) {
+            pat.push_back('\\');
+        }
+        pat.push_back(c);
+    }
+    return pat;
+}
+
+std::vector<std::string> glob_expand_word(const Word& w) {
+    std::string pat = glob_pattern_for(w);
     glob_t results{};
-    int flags = GLOB_NOCHECK | GLOB_NOMAGIC;
-    if (glob(pattern.c_str(), flags, nullptr, &results) != 0 || results.gl_pathc == 0) {
+    if (glob(pat.c_str(), 0, nullptr, &results) != 0 || results.gl_pathc == 0) {
         globfree(&results);
-        return {pattern};
+        return {w.text};
     }
     std::vector<std::string> out;
     out.reserve(results.gl_pathc);
@@ -214,12 +282,9 @@ std::vector<std::string> glob_expand(const std::string& pattern) {
 std::string find_similar_command(const std::string& name, int threshold) {
     std::string best;
     int best_dist = threshold + 1;
+    std::vector<int> prev2, prev, curr;
     for (const std::string& candidate : path_executables()) {
-        // Length alone bounds the edit distance, and skipping the obvious
-        // misses keeps this off the critical path of a typo'd command.
-        if (std::labs(static_cast<long>(candidate.size()) - static_cast<long>(name.size())) >= best_dist)
-            continue;
-        int dist = edit_distance(name, candidate);
+        int dist = edit_distance_bounded(name, candidate, best_dist, prev2, prev, curr);
         if (dist < best_dist) { best_dist = dist; best = candidate; }
     }
     return best_dist <= threshold ? best : "";
@@ -231,7 +296,15 @@ LuaValue drain_fd_to_lines(int fd) {
     std::string buf;
     char chunk[4096];
     ssize_t n;
-    while ((n = read(fd, chunk, sizeof chunk)) > 0) buf.append(chunk, static_cast<size_t>(n));
+    while (true) {
+        n = read(fd, chunk, sizeof chunk);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        buf.append(chunk, static_cast<size_t>(n));
+    }
     std::vector<std::string> lines;
     size_t start = 0;
     for (size_t i = 0; i < buf.size(); ++i) {
@@ -342,6 +415,67 @@ std::string describe_pipeline(const Pipeline& pl) {
     return out;
 }
 
+struct EnvGuard {
+    struct Saved {
+        std::string name;
+        bool had_old;
+        std::string old_val;
+    };
+    std::vector<Saved> saved;
+
+    void apply(const std::vector<std::string>& assignments) {
+        for (const auto& kv : assignments) {
+            size_t eq = kv.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = kv.substr(0, eq);
+            const char* prev = std::getenv(key.c_str());
+            saved.push_back({key, prev != nullptr, prev ? prev : ""});
+            setenv(key.c_str(), kv.substr(eq + 1).c_str(), 1);
+        }
+    }
+
+    ~EnvGuard() {
+        for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+            if (it->had_old) setenv(it->name.c_str(), it->old_val.c_str(), 1);
+            else unsetenv(it->name.c_str());
+        }
+    }
+};
+
+bool parse_signal_spec(const std::string& arg, int& sig_out) {
+    if (arg.size() < 2 || arg[0] != '-') return false;
+    std::string s = arg.substr(1);
+    bool all_digits = !s.empty();
+    for (char c : s) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+            all_digits = false;
+            break;
+        }
+    }
+    if (all_digits) {
+        char* end = nullptr;
+        long v = std::strtol(s.c_str(), &end, 10);
+        if (*end != '\0' || v <= 0 || v > 64) return false;
+        sig_out = static_cast<int>(v);
+        return true;
+    }
+    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (s.compare(0, 3, "SIG") == 0) s = s.substr(3);
+    static const std::pair<const char*, int> kSigs[] = {
+        {"HUP", SIGHUP},   {"INT", SIGINT},   {"QUIT", SIGQUIT}, {"ILL", SIGILL},
+        {"ABRT", SIGABRT}, {"KILL", SIGKILL}, {"USR1", SIGUSR1}, {"SEGV", SIGSEGV},
+        {"USR2", SIGUSR2}, {"PIPE", SIGPIPE}, {"ALRM", SIGALRM}, {"TERM", SIGTERM},
+        {"CONT", SIGCONT}, {"STOP", SIGSTOP}, {"TSTP", SIGTSTP},
+    };
+    for (const auto& entry : kSigs) {
+        if (s == entry.first) {
+            sig_out = entry.second;
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 Executor::Executor(lua_State* L) : L_(L) {
@@ -353,7 +487,28 @@ void Executor::init_job_control() {
     interactive_ = isatty(shell_terminal_);
     if (!interactive_) return;
 
-    while (tcgetpgrp(shell_terminal_) != (shell_pgid_ = getpgrp())) kill(-shell_pgid_, SIGTTIN);
+    if (tcgetpgrp(shell_terminal_) < 0) {
+        interactive_ = false;
+        return;
+    }
+    // If SIGTTIN is ignored by the parent environment, kill(-pgid, SIGTTIN)
+    // would be a no-op and spin at 100% CPU if we are not in the foreground.
+    struct sigaction cur{};
+    if (sigaction(SIGTTIN, nullptr, &cur) == 0 && cur.sa_handler == SIG_IGN) {
+        interactive_ = false;
+        return;
+    }
+
+    while (true) {
+        pid_t fg = tcgetpgrp(shell_terminal_);
+        shell_pgid_ = getpgrp();
+        if (fg < 0) {
+            interactive_ = false;
+            return;
+        }
+        if (fg == shell_pgid_) break;
+        kill(-shell_pgid_, SIGTTIN);
+    }
 
     struct sigaction ign {};
     ign.sa_handler = SIG_IGN;
@@ -413,42 +568,64 @@ int Executor::run_and_or(const AndOr& ao, bool background) {
     return status;
 }
 
-std::string Executor::expand_word(const Word& w) {
-    if (w.literal()) return w.text; // fully single-quoted: never expanded
+Word Executor::expand_word(const Word& w) {
+    if (w.literal()) return w; // fully single-quoted: never expanded
 
     std::string in = w.text, prot = w.prot;
     if (!in.empty() && in[0] == '~' && prot[0] == '0' && (in.size() == 1 || in[1] == '/')) {
         const char* home = std::getenv("HOME");
         if (home) {
-            in = home + in.substr(1);
-            prot = std::string(std::strlen(home), '0') + prot.substr(1);
+            size_t hlen = std::strlen(home);
+            in = std::string(home) + in.substr(1);
+            prot = std::string(hlen, '2') + prot.substr(1);
         }
     }
 
-    std::string out;
+    Word out;
     size_t i = 0;
     while (i < in.size()) {
         char c = in[i];
-        // A '$' that was quoted or backslash-escaped is just a dollar sign.
-        if (c != '$' || i + 1 >= in.size() || prot[i] == '1') { out += c; ++i; continue; }
+        char p = prot[i];
+        // A '$' that was single-quoted or backslash-escaped is just a dollar sign.
+        if (c != '$' || i + 1 >= in.size() || p == '1') {
+            out.text += c;
+            out.prot += p;
+            ++i;
+            continue;
+        }
         char next = in[i + 1];
+        char exp_prot = (p == '2') ? '2' : '0';
+        auto append_expanded = [&](const std::string& val) {
+            out.text += val;
+            out.prot.append(val.size(), exp_prot);
+        };
         if (next == '?') {
-            out += std::to_string(last_status_);
+            append_expanded(std::to_string(last_status_));
             i += 2;
         } else if (next == '(') {
             size_t close = match_paren(in, i + 1);
-            if (close == std::string::npos) { out += c; ++i; continue; }
-            out += run_command_substitution(in.substr(i + 2, close - (i + 2)));
+            if (close == std::string::npos) {
+                out.text += c;
+                out.prot += p;
+                ++i;
+                continue;
+            }
+            append_expanded(run_command_substitution(in.substr(i + 2, close - (i + 2))));
             i = close + 1;
         } else if (std::isalpha(static_cast<unsigned char>(next)) || next == '_') {
             size_t j = i + 1;
             while (j < in.size() && (std::isalnum(static_cast<unsigned char>(in[j])) || in[j] == '_')) ++j;
             const char* val = std::getenv(in.substr(i + 1, j - (i + 1)).c_str());
-            out += val ? val : "";
+            if (val) append_expanded(val);
             i = j;
         } else if (next == '{' && i + 2 < in.size()) {
             size_t close = in.find('}', i + 2);
-            if (close == std::string::npos) { out += c; ++i; continue; }
+            if (close == std::string::npos) {
+                out.text += c;
+                out.prot += p;
+                ++i;
+                continue;
+            }
             std::string inner = in.substr(i + 2, close - i - 2);
             std::string varname, defval;
             size_t dash = inner.find(":-");
@@ -459,31 +636,36 @@ std::string Executor::expand_word(const Word& w) {
                 varname = inner;
             }
             const char* val = varname.empty() ? nullptr : std::getenv(varname.c_str());
-            out += (val && val[0]) ? val : defval;
+            append_expanded((val && val[0]) ? val : defval);
             i = close + 1;
         } else {
-            out += c;
+            out.text += c;
+            out.prot += p;
             ++i;
         }
     }
     return out;
 }
 
+std::string Executor::expand_word_str(const Word& w) {
+    return expand_word(w).text;
+}
+
 std::vector<std::string> Executor::expand_words(const Word& w) {
-    std::string expanded = expand_word(w);
-    if (w.literal()) return {expanded};
+    Word expanded = expand_word(w);
+    if (w.literal()) return {expanded.text};
 
-    // brace expansion first
-    auto braced = brace_expand(expanded);
+    // brace expansion first (only on unquoted braces)
+    auto braced = brace_expand_word(expanded);
 
-    // then glob expansion on each result
+    // then glob expansion on each result (only on unquoted glob metacharacters)
     std::vector<std::string> result;
-    for (auto& s : braced) {
-        if (has_glob_chars(s)) {
-            auto matches = glob_expand(s);
+    for (const auto& bw : braced) {
+        if (has_unquoted_glob(bw)) {
+            auto matches = glob_expand_word(bw);
             result.insert(result.end(), matches.begin(), matches.end());
         } else {
-            result.push_back(s);
+            result.push_back(bw.text);
         }
     }
     return result;
@@ -494,6 +676,11 @@ std::string Executor::run_command_substitution(const std::string& inner) {
     if (pipe(pipefd) != 0) return "";
     std::fflush(nullptr); // else the child inherits a copy of our pending output
     pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return "";
+    }
     if (pid == 0) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
@@ -503,6 +690,7 @@ std::string Executor::run_command_substitution(const std::string& inner) {
         signal(SIGTSTP, SIG_DFL);
         signal(SIGTTIN, SIG_DFL);
         signal(SIGTTOU, SIG_DFL);
+        signal(SIGPIPE, SIG_DFL);
         // A subshell does no job control. Left interactive, an external
         // command in here would tcsetpgrp() the terminal over to its own
         // process group, and nothing would ever hand it back -- the real
@@ -526,10 +714,18 @@ std::string Executor::run_command_substitution(const std::string& inner) {
     std::string out;
     char buf[4096];
     ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof buf)) > 0) out.append(buf, static_cast<size_t>(n));
+    while (true) {
+        n = read(pipefd[0], buf, sizeof buf);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        out.append(buf, static_cast<size_t>(n));
+    }
     close(pipefd[0]);
     int status = 0;
-    waitpid(pid, &status, 0);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
     while (!out.empty() && out.back() == '\n') out.pop_back();
     return out;
 }
@@ -598,10 +794,11 @@ LuaValue Executor::run_native_run(const std::vector<ExpCmd>& cmds, const std::ve
     for (int i : idx) {
         const ExpCmd& ec = cmds[i];
         bool last_in_pipeline = (static_cast<size_t>(i) + 1 == cmds.size());
-        for (auto& kv : ec.assignments) apply_assignment(kv);
+        EnvGuard env_guard;
+        env_guard.apply(ec.assignments);
 
         std::vector<std::pair<RedirKind, std::string>> redirs;
-        for (auto& r : ec.redirects) redirs.emplace_back(r.kind, expand_word(r.target));
+        for (auto& r : ec.redirects) redirs.emplace_back(r.kind, expand_word_str(r.target));
 
         // A builtin feeding a later stage has to hand over its bytes rather
         // than print them. Temp file, not an OS pipe: nobody is draining the
@@ -726,15 +923,21 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
 
     if (name == "kill") {
         if (argv.size() < 2) {
-            std::fprintf(stderr, "wisp: kill: usage: kill [-signal] %%pid|%%job ...\n");
+            std::fprintf(stderr, "wisp: kill: usage: kill [-signal] %%job|pid ...\n");
             return 1;
         }
         int sig = SIGTERM;
         size_t start = 1;
-        if (argv.size() > 2 && argv[1].size() > 1 && argv[1][0] == '-') {
-            sig = std::atoi(argv[1].c_str() + 1);
-            if (sig <= 0) sig = SIGTERM;
+        if (argv[1].size() > 1 && argv[1][0] == '-') {
+            if (!parse_signal_spec(argv[1], sig)) {
+                std::fprintf(stderr, "wisp: kill: %s: invalid signal specification\n", argv[1].c_str());
+                return 1;
+            }
             start = 2;
+        }
+        if (start >= argv.size()) {
+            std::fprintf(stderr, "wisp: kill: usage: kill [-signal] %%job|pid ...\n");
+            return 1;
         }
         int rc = 0;
         for (size_t i = start; i < argv.size(); ++i) {
@@ -776,12 +979,17 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
         bool newline = true;
         bool process_escape = false;
         size_t start = 1;
-        if (start < argv.size() && argv[start] == "-n") {
-            newline = false;
-            ++start;
-        }
-        if (start < argv.size() && argv[start] == "-e") {
-            process_escape = true;
+        while (start < argv.size() && argv[start].size() >= 2 && argv[start][0] == '-') {
+            bool valid = true;
+            bool n_flag = false, e_flag = false;
+            for (size_t k = 1; k < argv[start].size(); ++k) {
+                if (argv[start][k] == 'n') n_flag = true;
+                else if (argv[start][k] == 'e') e_flag = true;
+                else { valid = false; break; }
+            }
+            if (!valid) break;
+            if (n_flag) newline = false;
+            if (e_flag) process_escape = true;
             ++start;
         }
         for (size_t i = start; i < argv.size(); ++i) {
@@ -931,6 +1139,7 @@ int Executor::run_pkg(const std::vector<std::string>& argv) {
     pid_t pid = fork();
     if (pid < 0) return 1;
     if (pid == 0) {
+        signal(SIGPIPE, SIG_DFL);
         std::vector<char*> c_argv;
         for (auto& a : cmd) c_argv.push_back(const_cast<char*>(a.c_str()));
         c_argv.push_back(nullptr);
@@ -954,6 +1163,7 @@ void Executor::mark_process_status(pid_t pid, int status) {
             if (p.pid == pid) {
                 p.status = status;
                 if (WIFSTOPPED(status)) p.stopped = true;
+                else if (WIFCONTINUED(status)) p.stopped = false;
                 else { p.completed = true; p.stopped = false; }
                 return;
             }
@@ -1040,6 +1250,7 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
     ShellJob job;
     bool have_job = any_external;
     if (have_job) {
+        if (jobs_.empty()) next_job_id_ = 1;
         job.id = next_job_id_++;
         job.cmdline = cmdline_text;
         job.background = background;
@@ -1091,22 +1302,55 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
         } else if (carry.kind == Carry::Kind::Value) {
             serialized = lua_env::render_value(carry.value);
             int pfd[2];
-            pipe(pfd);
+            if (pipe(pfd) != 0) {
+                std::fprintf(stderr, "wisp: pipe: %s\n", std::strerror(errno));
+                last_status_ = 1;
+                break;
+            }
             in_fd = pfd[0];
-            writer_fd = pfd[1];
-            spawn_writer = true;
+            if (serialized.size() <= 4096) {
+                // Fits within Linux pipe capacity (64K): write and close before
+                // fork() so short native->external pipelines skip thread creation.
+                size_t off = 0;
+                while (off < serialized.size()) {
+                    ssize_t n = write(pfd[1], serialized.data() + off, serialized.size() - off);
+                    if (n < 0) {
+                        if (errno == EINTR) continue;
+                        break;
+                    }
+                    off += static_cast<size_t>(n);
+                }
+                close(pfd[1]);
+            } else {
+                writer_fd = pfd[1];
+                spawn_writer = true;
+            }
         }
 
         int out_pipe[2] = {-1, -1};
-        if (!is_last) pipe(out_pipe);
+        if (!is_last && pipe(out_pipe) != 0) {
+            std::fprintf(stderr, "wisp: pipe: %s\n", std::strerror(errno));
+            if (in_fd != -1) close(in_fd);
+            if (spawn_writer) close(writer_fd);
+            last_status_ = 1;
+            break;
+        }
 
         // Expanded before the fork: a $(...) in a redirect target runs its own
         // subshell, and that belongs to us, not to the child.
         std::vector<std::pair<RedirKind, std::string>> redirs;
-        for (auto& r : ec.redirects) redirs.emplace_back(r.kind, expand_word(r.target));
+        for (auto& r : ec.redirects) redirs.emplace_back(r.kind, expand_word_str(r.target));
 
         std::fflush(nullptr);
         pid_t pid = fork();
+        if (pid < 0) {
+            std::fprintf(stderr, "wisp: fork: %s\n", std::strerror(errno));
+            if (in_fd != -1) close(in_fd);
+            if (spawn_writer) close(writer_fd);
+            if (!is_last) { close(out_pipe[0]); close(out_pipe[1]); }
+            last_status_ = 1;
+            break;
+        }
         if (pid == 0) {
             pid_t pg = (job.pgid == -1) ? 0 : job.pgid;
             if (have_job) setpgid(0, pg);
@@ -1117,6 +1361,7 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
             signal(SIGTSTP, SIG_DFL);
             signal(SIGTTIN, SIG_DFL);
             signal(SIGTTOU, SIG_DFL);
+            signal(SIGPIPE, SIG_DFL);
 
             if (in_fd != -1) dup2(in_fd, STDIN_FILENO);
             if (!is_last) dup2(out_pipe[1], STDOUT_FILENO);
@@ -1160,7 +1405,11 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
                 size_t off = 0;
                 while (off < data.size()) {
                     ssize_t n = write(wfd, data.data() + off, data.size() - off);
-                    if (n <= 0) break; // EPIPE or child exited early: stop writing
+                    if (n < 0) {
+                        if (errno == EINTR) continue;
+                        break; // EPIPE or child exited early: stop writing
+                    }
+                    if (n == 0) break;
                     off += static_cast<size_t>(n);
                 }
                 close(wfd);

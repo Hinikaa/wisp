@@ -30,9 +30,9 @@ local function stale(target, inputs)
     return sh("test -n \"$(find " .. inputs .. " -newer " .. target .. " 2>/dev/null)\"")
 end
 
-local function lua_flags()
+local function lua_pkg_flag(mode)
     for _, pkg in ipairs({"lua5.4", "lua-5.4", "lua54", "lua"}) do
-        local h = io.popen("pkg-config --cflags --libs " .. pkg .. " 2>/dev/null")
+        local h = io.popen("pkg-config " .. mode .. " " .. pkg .. " 2>/dev/null")
         local out = h and h:read("*a") or ""
         if h then h:close() end
         if out:match("%S") then return (out:gsub("%s+", " ")) end
@@ -41,13 +41,17 @@ local function lua_flags()
     os.exit(1)
 end
 
+local function lua_flags()
+    return {cflags = lua_pkg_flag("--cflags"), libs = lua_pkg_flag("--libs")}
+end
+
 local function build(lua)
     local objs = {}
     for _, src in ipairs(SRCS) do
         local obj = src .. ".o"
         objs[#objs + 1] = obj
         if stale(obj, src .. ".cpp " .. HEADERS) then
-            if not run(("%s %s %s -c %s.cpp -o %s"):format(CXX, FLAGS, lua, src, obj)) then return false end
+            if not run(("%s %s %s -c %s.cpp -o %s"):format(CXX, FLAGS, lua.cflags, src, obj)) then return false end
         end
     end
     if stale("linenoise.o", "linenoise.c linenoise.h") then
@@ -57,7 +61,7 @@ local function build(lua)
 
     local all = table.concat(objs, " ")
     if stale("wisp", all) then
-        if not run(("%s %s -o wisp %s %s -lpthread"):format(CXX, FLAGS, all, lua)) then return false end
+        if not run(("%s %s -o wisp %s %s -lpthread"):format(CXX, FLAGS, all, lua.libs)) then return false end
     end
     print("done: ./wisp")
     return true
@@ -67,7 +71,7 @@ local function test(lua)
     if not build(lua) then return false end
     local passed, failed = 0, 0
     for bin, objs in pairs(TESTS) do
-        local ok = run(("%s %s %s -o %s %s.cpp %s -lpthread"):format(CXX, FLAGS, lua, bin, bin, objs))
+        local ok = run(("%s %s %s -o %s %s.cpp %s %s -lpthread"):format(CXX, FLAGS, lua.cflags, bin, bin, objs, lua.libs))
                    and sh("./" .. bin)
         if ok then passed = passed + 1 else failed = failed + 1 end
     end

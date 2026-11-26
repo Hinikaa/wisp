@@ -134,8 +134,9 @@ wisp> echo /tmp/report_*.csv
 /tmp/report_2024.csv  /tmp/report_2025.csv  /tmp/report_2026.csv
 ```
 
-Glob patterns that match nothing are kept as-is (same as bash). Single-quoted
-words are never globbed.
+Glob patterns that match nothing are kept as-is (same as bash). Single quotes,
+double quotes, and backslash escapes suppress globbing (`echo "*.cpp"`,
+`echo \*.cpp`).
 
 A line starting with `:` is Lua instead -- `:1 + 1` prints `2`; multi-line
 input (a `for` loop, a multi-statement function) prompts `>>> ` for
@@ -197,9 +198,10 @@ Tab completion works for:
   `type`, `pkg`), Lua global functions, and `$PATH` executables (filtered to
   `+x` only). The `$PATH` scan is cached and shared with `type` and the
   command-not-found hint, so it costs one walk per session, not one per Tab
-- **Filenames** (later words): with `/` suffix for directories, hidden files
-  shown only when prefix starts with `.`
-- **Lua mode** (`:prefix`): all Lua global names when input starts with `:`
+- **Filenames** (later words, including `~/...`): with `/` suffix for
+  directories, hidden files shown only when prefix starts with `.`
+- **Lua mode** (`:prefix` or `:table.prefix`): Lua globals and nested table
+  keys when input starts with `:`
 
 **Ctrl-R** is reverse incremental history search, as everywhere else: type to
 narrow, Ctrl-R again for the next older match, Enter to run it, Esc to edit
@@ -261,13 +263,13 @@ print(socket._VERSION)
 
 ## Benchmarks
 
-Measured on x86-64 Linux, g++ 15, Lua 5.4, bash 5.3, zsh 5.9, dash 0.5.
+Measured on x86-64 Linux, g++ 16, Lua 5.4, bash 5.3, zsh 5.9, dash 0.5.
 
 | | wisp | bash 5.3 | zsh | dash | lua 5.4 |
 |---|---|---|---|---|---|
-| Binary, stripped | 423K | 1.1M | ~900K | **~120K** | 318K |
-| Source lines | **2,533** | ~500K | ~250K | ~20K | ~25K |
-| Startup, best of 40 | 1.6ms | 2.1ms | **1.2ms** | **1.2ms** | 1.5ms |
+| Binary, stripped | 344K | 1.1M | ~900K | **~120K** | 318K |
+| Source lines | **2,864** | ~500K | ~250K | ~20K | ~25K |
+| Startup, best of 40 | 0.55ms | 2.1ms | 1.2ms | 1.2ms | 1.5ms |
 | Throughput, 500 runs | 1.07ms | 1.66ms | -- | -- | -- |
 | Peak RSS | **2.9MB** | 5.7MB | -- | -- | 2.4MB |
 
@@ -302,7 +304,7 @@ re-parse at every stage.
 Not everyone needs bash. Here's where wisp sits relative to the alternatives
 people actually use.
 
-| Feature | wisp v2 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
+| Feature | wisp v3 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
 |---|---|---|---|---|---|---|
 | Interactive REPL | yes | yes | no | yes | yes | yes |
 | Reverse history search (Ctrl-R) | yes | yes | no | yes | yes | yes |
@@ -318,10 +320,10 @@ people actually use.
 | `${VAR:-default}` | yes | yes | yes | yes | yes | no |
 | Brace expansion | yes | yes | no | yes | yes | no |
 | External command not-found | **Levenshtein hint** | no | no | no | no | no |
-| Binary size | **423K** | 1.1M | ~120K | ~1M | ~15M | ~200M+ |
-| Source lines | **2,533** | ~500K | ~20K | ~250K | ~100K | millions |
+| Binary size | **344K** | 1.1M | ~120K | ~1M | ~15M | ~200M+ |
+| Source lines | **2,864** | ~500K | ~20K | ~250K | ~100K | millions |
 
-### What wisp v2 can do
+### What wisp v3 can do
 
 - Run any shell command: `ls`, `grep -r src/`, `make && make install`
 - Be your login shell: `-c` takes shell syntax, so anything that spawns
@@ -330,17 +332,17 @@ people actually use.
 - Redirects: `<`, `>`, `>>`, `2>`, `2>&1`, `&>` -- on builtins too, so
   `echo hi > f` and `jobs 2>/dev/null` behave
 - Background jobs: `sleep 30 &` then `jobs`, `fg %1`, `bg %1`
-- Kill background jobs: `kill %1`, `kill -9 %1`
+- Kill background jobs: `kill %1`, `kill -9 %1`, `kill -KILL %1`
 - Disown jobs: `disown %1` (removes from job table, survives shell exit)
 - Wait for jobs: `wait %1` or `wait` (all background jobs)
 - `$?`, `$(cmd)`, `$VAR`, `${VAR:-default}` expansion -- including
   `$(cmd | with | pipes)` and nested `$(echo $(date))`
 - Environment assignments: `FOO=bar` for the session, `FOO=bar cmd` for one
-  command
+  command (scoped for builtins and Lua functions too)
 - Brace expansion: `{a,b,c}`, `{x,y}{1,2}`, ranges `{1..10}` and `{a..e}`
 - Glob patterns: `*.cpp`, `src/**/*.h`
 - Backslash escapes and `#` comments
-- Tab completion: commands, filenames, Lua functions
+- Tab completion: commands, filenames (including `~/...`), Lua functions & dotted tables
 - Lua one-liners: `:1 + 1`, `:print("hi")`
 - Lua config: define `prompt()`, aliases, pipeline stages in `init.lua`
 - Structured pipelines: `nums | sorted | wc -l` passes Lua tables between stages
@@ -350,11 +352,11 @@ people actually use.
 - `pwd` to print working directory
 - `source file.lua` to load Lua files at runtime
 - `type cmd` to check if command is builtin, function, or PATH executable
-- `echo -n` (no newline) and `echo -e` (escape sequences: `\n`, `\t`, `\\`)
+- `echo -n` (no newline), `echo -e` (escape sequences: `\n`, `\t`, `\\`), and combined flags (`echo -ne`)
 - `pkg install|remove|list|search|info|update` on top of LuaRocks
 - Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
 
-### What wisp v2 can't do (yet)
+### What wisp v3 can't do (yet)
 
 - No array syntax: `arr=(1 2 3)` doesn't exist
 - No `[[ ]]` double-bracket tests
@@ -362,8 +364,6 @@ people actually use.
 - No heredocs (`<<EOF`), no `$1`..`$9` positional parameters
 - No word splitting on expansion results: `$VAR` holding `a b` is one
   argument, not two. Closer to fish than to POSIX, and deliberate
-- A backslash-escaped glob character still globs: `echo \*` expands.
-  Quote it (`echo '*'`) to suppress
 - Control flow is Lua's job -- there is no `if`/`while`/`for` shell grammar,
   and there is not going to be one
 
@@ -383,13 +383,13 @@ people actually use.
   uses Lua -- the most embedded scripting language on the planet, with
   existing libraries, docs, and muscle memory.
 - **powershell**: Object pipelines, but Windows-first, massive runtime, no
-  POSIX compatibility. wisp is 423K and runs on any Linux box.
+  POSIX compatibility. wisp is 344K and runs on any Linux box.
 
 ## "But it's just AI slop"
 
 No.
 
-- **~2,500 lines of C++17**, not a framework. No React, no "hello world" boilerplate,
+- **~2,860 lines of C++17**, not a framework. No React, no "hello world" boilerplate,
   no dependency tree. `g++ -std=c++17` and a Lua pkg-config flag. That's it.
 - **Lexer, parser, executor, Lua embedder** -- hand-written, not generated.
   The parser is a recursive descent with actual error recovery (`<eof>`
@@ -398,7 +398,7 @@ No.
   Passing Lua tables between stages means zero fork/serialize overhead for
   native runs -- a deliberate tradeoff against the "everything is bytes"
   model every other shell uses.
-- **423K binary** after strip, and it starts faster than bash. Five C++
+- **344K binary** after strip, and it starts faster than bash. Five C++
   files and a Makefile, not a "vibe-coded" project with 47 config files and a CI
   pipeline longer than the source.
 - ** linenoise.c** is vendored (BSD-2-Clause, Salvatore Sanfilippo).
@@ -415,7 +415,7 @@ entire source? A "minimal shell" that's actually a Python script with
 `subprocess.run`? A bash alias collection marketed as a "framework"?
 
 wisp does one thing: it's a shell that uses Lua for config and structured
-data in pipelines. It does it in about 2,500 lines, with an end-to-end test
+data in pipelines. It does it in about 2,860 lines, with an end-to-end test
 suite that runs the real binary. That's not slop. That's focus.
 
 **Full disclosure:** I had trouble with C++ and used AI for assistance.
@@ -426,14 +426,14 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
 
 ## Notes
 
-- **Globbing works for bare and double-quoted words.** Single-quoted words
-  are never expanded. Patterns matching nothing are kept as-is (bash
-  behavior). Brace expansion is separate from globbing and works on all
-  unquoted words.
+- **Globbing and brace expansion apply only to bare unquoted characters.**
+  Single quotes, double quotes, and backslash escapes suppress both. Patterns
+  matching nothing are kept as-is (bash behavior).
 - **Quoting is tracked per character, not per word.** The lexer carries a
-  mask alongside each word saying which characters came from quotes or a
-  backslash, which is why `--format='%h %s'` stays one argument and why
-  `\$HOME` survives expansion while `"$HOME"` does not.
+  3-state mask (`0` bare, `1` single-quoted/escaped, `2` double-quoted) alongside
+  each word, which is why `--format='%h %s'` stays one argument, `\$HOME`
+  survives expansion, and `"$HOME"` expands variables while keeping glob and
+  brace characters literal.
 - **A native run's value never leaves the Lua VM.** Consecutive
   function/builtin stages chain on the Lua stack; the C++ `LuaValue`
   representation is built once on the way in from an external process and
@@ -470,15 +470,15 @@ write C++ I couldn't write alone. That's a tool, not a ghostwriter.
   wc -c` pipes, `echo hi > f` writes the file. A builtin feeding a later
   stage has its output captured into a temp file rather than an OS pipe --
   nothing is draining the far end yet, and a pipe would deadlock past 64K.
-- **`kill %N` sends SIGTERM** to background job process groups. `jobs -l`
+- **`kill %N` sends SIGTERM by default** (supports numeric `-9` and symbolic `-KILL` / `-HUP` signals) to background job process groups. `jobs -l`
   shows PIDs. Standard job control, nothing exotic.
 - **`cd -`** goes to the previous directory (like bash). Tracks the last
   `cd` destination automatically.
 - **`source file.lua`** loads and executes a Lua file at runtime. Useful
   for loading function libraries or runtime config.
 - **`echo -n`** suppresses trailing newline. **`echo -e`** processes escape
-  sequences (`\n`, `\t`, `\\`). Plain `echo` with no flags works as
-  expected.
+  sequences (`\n`, `\t`, `\\`), and combined flags like **`echo -ne`** work.
+  Plain `echo` with no flags works as expected.
 - **`disown %N`** removes a job from the job table. The process keeps
   running but the shell won't send SIGHUP on exit.
 - **`wait %N`** blocks until the specified background job finishes. `wait`

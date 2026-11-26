@@ -20,7 +20,7 @@ struct Word {
     std::string text;
     std::string prot;
 
-    bool literal() const { return prot.find('0') == std::string::npos; }
+    bool literal() const { return prot.find_first_not_of('1') == std::string::npos; }
 };
 
 enum class RedirKind { In, Out, Append, ErrOut, ErrToOut, OutErr };

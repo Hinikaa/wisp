@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -7,6 +9,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 extern "C" {
 #include <lauxlib.h>
@@ -18,7 +21,7 @@ extern "C" {
 #include "linenoise.h"
 #include "lua_env.h"
 
-#define WISP_VERSION "3.0.0"
+#define WISP_VERSION "3.1.0"
 
 namespace {
 
@@ -45,7 +48,6 @@ bool starts_with(const std::string& s, const std::string& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
 
-// v1 completion
 void completion(const char* buf, linenoiseCompletions* lc) {
     std::string s(buf);
     bool lua_mode = !s.empty() && s[0] == ':';
@@ -54,24 +56,53 @@ void completion(const char* buf, linenoiseCompletions* lc) {
         std::string prefix = s.substr(1);
         size_t last_dot = prefix.find_last_of('.');
         std::string before = s.substr(0, s.size() - prefix.size());
+        std::string table_path;
         if (last_dot != std::string::npos) {
+            table_path = prefix.substr(0, last_dot);
             before += prefix.substr(0, last_dot + 1);
             prefix = prefix.substr(last_dot + 1);
         }
-        if (prefix.empty()) return;
+        if (prefix.empty() && table_path.empty()) return;
 
         if (g_L) {
+            int top = lua_gettop(g_L);
             lua_pushglobaltable(g_L);
-            lua_pushnil(g_L);
-            while (lua_next(g_L, -2) != 0) {
-                if (lua_type(g_L, -2) == LUA_TSTRING) {
-                    const char* name = lua_tostring(g_L, -2);
-                    if (name && starts_with(name, prefix))
-                        linenoiseAddCompletion(lc, (before + name).c_str());
+            bool ok = true;
+            if (!table_path.empty()) {
+                size_t start = 0;
+                while (start <= table_path.size()) {
+                    size_t dot = table_path.find('.', start);
+                    std::string seg =
+                        table_path.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+                    if (seg.empty()) {
+                        ok = false;
+                        break;
+                    }
+                    lua_getfield(g_L, -1, seg.c_str());
+                    if (!lua_istable(g_L, -1)) {
+                        ok = false;
+                        break;
+                    }
+                    if (dot == std::string::npos) break;
+                    start = dot + 1;
                 }
-                lua_pop(g_L, 1);
             }
-            lua_pop(g_L, 1);
+            if (ok) {
+                std::vector<std::string> matches;
+                lua_pushnil(g_L);
+                while (lua_next(g_L, -2) != 0) {
+                    if (lua_type(g_L, -2) == LUA_TSTRING) {
+                        const char* name = lua_tostring(g_L, -2);
+                        if (name && starts_with(name, prefix)) matches.emplace_back(name);
+                    }
+                    lua_pop(g_L, 1);
+                }
+                std::sort(matches.begin(), matches.end());
+                for (const auto& m : matches) {
+                    linenoiseAddCompletion(lc, (before + m).c_str());
+                }
+            }
+            lua_settop(g_L, top);
         }
         return;
     }
@@ -91,8 +122,7 @@ void completion(const char* buf, linenoiseCompletions* lc) {
     };
 
     if (first_word) {
-        for (const char* b : {"cd", "exit", "export", "command", "jobs", "fg", "bg", "kill",
-                              "source", "echo", "disown", "wait", "pwd", "type", "pkg"})
+        for (const char* b : kBuiltins)
             if (starts_with(b, prefix)) add_if_new(b);
 
         if (g_L) {
@@ -124,22 +154,31 @@ void completion(const char* buf, linenoiseCompletions* lc) {
             if (dir.empty()) dir = "/";
         }
         std::string opendir_path = (slash != std::string::npos) ? dir : ".";
+        if (starts_with(opendir_path, "~/")) {
+            if (const char* home = std::getenv("HOME"); home && *home) {
+                opendir_path = std::string(home) + opendir_path.substr(1);
+            }
+        }
         if (DIR* d = opendir(opendir_path.c_str())) {
+            std::vector<std::string> matches;
             struct dirent* ent;
             while ((ent = readdir(d)) != nullptr) {
                 std::string name = ent->d_name;
                 if (name == "." || name == "..") continue;
-                if (!prefix.empty() && name[0] == '.' && base[0] != '.') continue;
+                if (name[0] == '.' && (base.empty() || base[0] != '.')) continue;
                 if (!starts_with(name, base)) continue;
                 std::string full = (slash != std::string::npos) ? dir + name : name;
-                std::string complete = before + full;
-                std::string check_path = opendir_path + "/" + name;
+                std::string check_path = (!opendir_path.empty() && opendir_path.back() == '/')
+                                             ? (opendir_path + name)
+                                             : (opendir_path + "/" + name);
                 struct stat st{};
                 if (stat(check_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
-                    complete += "/";
-                add_if_new(complete);
+                    full += "/";
+                matches.push_back(std::move(full));
             }
             closedir(d);
+            std::sort(matches.begin(), matches.end());
+            for (const auto& m : matches) add_if_new(m);
         }
     }
 }
@@ -210,7 +249,6 @@ static int run_script(lua_State* L, const char* path) {
         return 1;
     }
     Executor exec(L);
-    exec.init_job_control();
     int status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) std::fprintf(stderr, "wisp: %s\n", lua_tostring(L, -1));
     exec.reap_background();
@@ -219,6 +257,8 @@ static int run_script(lua_State* L, const char* path) {
 }
 
 int main(int argc, char** argv) {
+    std::signal(SIGPIPE, SIG_IGN);
+
     // Answered before Lua is even started: these have to work when something
     // is merely probing what it just found on $PATH.
     if (argc >= 2) {
@@ -254,7 +294,6 @@ int main(int argc, char** argv) {
     // outright.
     if (std::strcmp(flag, "-c") == 0) {
         Executor exec(L);
-        exec.init_job_control();
         int status = argv[2][0] == ':' ? run_lua_sigil(L, argv[2] + 1) : exec.run_line_str(argv[2]);
         exec.reap_background();
         return status;

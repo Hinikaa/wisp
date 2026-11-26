@@ -82,6 +82,9 @@ check 'backslash dollar'    '$HOME'     'echo \$HOME'
 check 'comment'             'hi'        'echo hi # not printed'
 check 'glob no match kept'  '*.nomatch-zz' 'echo *.nomatch-zz'
 check 'glob match'          'g1.zz g2.zz' 'printf "" > g1.zz' 'printf "" > g2.zz' 'echo *.zz'
+check 'double-quoted glob'  '*.zz'        'echo "*.zz"'
+check 'escaped glob'        '*.zz'        'echo \*.zz'
+check 'double-quoted brace' '{a,b}'       'echo "{a,b}"'
 
 # --- builtins ----------------------------------------------------------------
 check 'cd updates PWD'      '/tmp'      'cd /tmp' 'echo $PWD'
@@ -90,6 +93,9 @@ check 'type builtin'        'cd is a shell builtin' 'type cd'
 check 'echo -n'             'ab'        'echo -n a' 'echo b'
 check 'echo -e'             'a
 b'                                      'echo -e "a\nb"'
+check 'echo -ne combined'   'a	b'       'echo -ne "a\tb"'
+check 'scoped env builtin'  'ok
+[]'                                     'SCOPED_X=1 echo ok' 'echo [$SCOPED_X]'
 check 'unknown command'     'wisp: definitely-not-a-command-zz: command not found' \
                                         'definitely-not-a-command-zz'
 
@@ -103,8 +109,11 @@ check 'lua into external'   '2'         ':function two() return {"a","b"} end' '
 check 'lua value redirect'  'v'         ':function one() return "v" end' 'one > f7' 'cat f7'
 check 'sh() from lua'       'from-lua
 0'                                      ':sh("echo from-lua")'
+check 'sigpipe survival'    '1
+survived'                               ':function big() local t={} for i=1,5000 do t[i]=tostring(i) end return t end' 'big | head -n 1' 'echo survived'
 
 # --- argv --------------------------------------------------------------------
+check_arg '--version'       'wisp 3.1.0' --version
 check_arg '-c runs shell'   'hi'        -c 'echo hi'
 check_arg '-c chains'       'a
 b'                                      -c 'echo a && echo b'

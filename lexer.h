@@ -13,14 +13,15 @@ enum class TokType {
 struct Token {
     TokType type;
     std::string text;  // set for Word tokens
-    // Per-character protection mask, same length as text: '1' marks a
-    // character that came from a single-quoted section or a backslash escape
-    // and so must survive $/glob/brace expansion untouched. A per-character
-    // mask beats one bool per word because quoting is per-section --
-    // `--fmt='%h %s'` is a single argument with only its tail protected.
+    // Per-character protection mask, same length as text:
+    //   '0' = bare unquoted (eligible for $, ~, brace, and glob expansion)
+    //   '1' = single-quoted or backslash-escaped (completely literal)
+    //   '2' = double-quoted ($ expands; ~, brace, and glob stay literal)
+    // A per-character mask beats one bool per word because quoting is
+    // per-section -- `--fmt='%h %s'` is one argument with only its tail '1'.
     std::string prot;
 
-    bool literal() const { return prot.find('0') == std::string::npos; }
+    bool literal() const { return prot.find_first_not_of('1') == std::string::npos; }
 };
 
 // Index of the ')' closing the '(' at `open`, or npos. Shared with the

@@ -1,5 +1,6 @@
 #include "lua_env.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -72,8 +73,16 @@ bool is_array_table(lua_State* L, int idx) {
     lua_Integer count = 0;
     lua_pushnil(L);
     while (lua_next(L, idx) != 0) {
-        ++count;
         lua_pop(L, 1);
+        if (!lua_isinteger(L, -1)) {
+            lua_pop(L, 1);
+            return false;
+        }
+        ++count;
+        if (count > len) {
+            lua_pop(L, 1);
+            return false;
+        }
     }
     return count == len;
 }
@@ -104,6 +113,7 @@ LuaValue pull_luavalue(lua_State* L, int idx) {
             if (is_array_table(L, idx)) {
                 v.type = LuaValue::Type::Array;
                 lua_Integer len = static_cast<lua_Integer>(lua_rawlen(L, idx));
+                v.arr.reserve(static_cast<size_t>(len));
                 for (lua_Integer i = 1; i <= len; ++i) {
                     lua_rawgeti(L, idx, i);
                     v.arr.push_back(pull_luavalue(L, -1));
@@ -174,7 +184,8 @@ void append_scalar(std::string& out, const LuaValue& v) {
             break;
         case LuaValue::Type::Number: {
             char buf[64];
-            if (v.n == static_cast<double>(static_cast<long long>(v.n)))
+            if (std::isfinite(v.n) && v.n >= -9007199254740992.0 && v.n <= 9007199254740992.0 &&
+                std::trunc(v.n) == v.n)
                 std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(v.n));
             else
                 std::snprintf(buf, sizeof buf, "%g", v.n);
@@ -234,12 +245,34 @@ lua_State* init() {
     // of `luarocks path`, which would cost a fork on every startup.
     if (const char* home = std::getenv("HOME"); home && *home) {
         std::string h(home);
-        std::string add =
-            "package.path = '" + h + "/.luarocks/share/lua/" LUA_VDIR "/?.lua;" +
+        std::string path_prefix =
+            h + "/.luarocks/share/lua/" LUA_VDIR "/?.lua;" +
             h + "/.luarocks/share/lua/" LUA_VDIR "/?/init.lua;" +
-            h + "/.wisp/packages/?.lua;" + h + "/.wisp/packages/?/init.lua;' .. package.path\n"
-            "package.cpath = '" + h + "/.luarocks/lib/lua/" LUA_VDIR "/?.so;' .. package.cpath";
-        if (luaL_dostring(L, add.c_str()) != LUA_OK) lua_pop(L, 1);
+            h + "/.wisp/packages/?.lua;" + h + "/.wisp/packages/?/init.lua;";
+        std::string cpath_prefix =
+            h + "/.luarocks/lib/lua/" LUA_VDIR "/?.so;";
+        lua_getglobal(L, "package");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "path");
+            if (lua_isstring(L, -1)) {
+                lua_pushlstring(L, path_prefix.data(), path_prefix.size());
+                lua_insert(L, -2);
+                lua_concat(L, 2);
+                lua_setfield(L, -2, "path");
+            } else {
+                lua_pop(L, 1);
+            }
+            lua_getfield(L, -1, "cpath");
+            if (lua_isstring(L, -1)) {
+                lua_pushlstring(L, cpath_prefix.data(), cpath_prefix.size());
+                lua_insert(L, -2);
+                lua_concat(L, 2);
+                lua_setfield(L, -2, "cpath");
+            } else {
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
     }
 
     return L;
@@ -336,6 +369,7 @@ std::string render_value(const LuaValue& v) {
             // record (a missing field) still renders via append_scalar.
             break;
         case LuaValue::Type::Array:
+            out.reserve(v.arr.size() * 16);
             for (auto& elem : v.arr) {
                 if (elem.type == LuaValue::Type::Table) {
                     append_record_line(out, elem);

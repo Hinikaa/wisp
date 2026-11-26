@@ -92,7 +92,7 @@ std::vector<Token> lex(const std::string& line) {
                     }
                 }
                 text.push_back(d);
-                prot.push_back('0');
+                prot.push_back('2');
                 ++pos;
             }
             if (!closed) throw std::runtime_error("wisp: unterminated double-quoted string");

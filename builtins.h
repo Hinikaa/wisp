@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <set>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 // Name resolution shared by every module that has to answer "what does this
@@ -12,14 +13,20 @@
 // (classifies a word as Builtin before looking for a Lua function), and
 // main.cpp (tab completion).
 
+inline constexpr std::array<const char*, 15> kBuiltins = {
+    "cd", "exit", "export", "command", "jobs", "fg", "bg", "kill",
+    "source", "echo", "disown", "wait", "pwd", "type", "pkg",
+};
+
 inline bool is_builtin_name(const std::string& name) {
-    static constexpr std::array<const char*, 15> kBuiltins = {
-        "cd", "exit", "export", "command", "jobs", "fg", "bg", "kill",
-        "source", "echo", "disown", "wait", "pwd", "type", "pkg",
-    };
     for (const char* b : kBuiltins)
         if (name == b) return true;
     return false;
+}
+
+inline bool is_executable_file(const std::string& path) {
+    struct stat st{};
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(path.c_str(), X_OK) == 0;
 }
 
 // Every executable name on $PATH, scanned once and kept. Tab completion, the
@@ -49,7 +56,7 @@ inline const std::set<std::string>& path_executables() {
                 if (ent->d_type == DT_DIR) continue; // cheap reject, no stat needed
                 std::string name = ent->d_name;
                 if (name == "." || name == "..") continue;
-                if (access((dir + "/" + name).c_str(), X_OK) == 0) cache.insert(std::move(name));
+                if (is_executable_file(dir + "/" + name)) cache.insert(std::move(name));
             }
             closedir(d);
         }
@@ -70,7 +77,7 @@ inline std::string which(const std::string& name) {
         std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
         if (dir.empty()) dir = ".";
         std::string full = dir + "/" + name;
-        if (access(full.c_str(), X_OK) == 0) return full;
+        if (is_executable_file(full)) return full;
         if (colon == std::string::npos) break;
         start = colon + 1;
     }

@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y liblua5.4-dev
+
+      - name: Run test suite
+        run: make test
+
+      - name: Build and strip release binary
+        run: |
+          make wisp
+          strip wisp
+
+      - name: Smoke test
+        run: |
+          ./wisp --version
+          ./wisp --help
+
+      - name: Package release asset
+        run: |
+          mkdir -p dist
+          tar -czf "dist/wisp-linux-x86_64.tar.gz" wisp README.md LICENSE LINENOISE_LICENSE example-init.lua
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/wisp-linux-x86_64.tar.gz
+          generate_release_notes: true

@@ -86,7 +86,8 @@ private:
     int run_and_or(const AndOr& ao, bool background);
     int run_pipeline(const Pipeline& pl, bool background, const std::string& cmdline_text);
 
-    std::string expand_word(const Word& w);
+    Word expand_word(const Word& w);
+    std::string expand_word_str(const Word& w);
     std::vector<std::string> expand_words(const Word& w);
     std::string run_command_substitution(const std::string& inner);
 

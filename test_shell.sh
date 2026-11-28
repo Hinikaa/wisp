@@ -42,7 +42,7 @@ check_arg() {
 
 # --- externals and pipelines -------------------------------------------------
 check 'external'            'hi'        'echo hi'
-check 'pipe to external'    '3'         'echo hi | wc -c'
+check 'pipe to external'    '3'         'echo hi | wc -c | tr -d " "'
 check 'pipe both external'  'HI'        'printf hi | tr a-z A-Z'
 check 'and-or short circuit' 'yes'      'true && echo yes'
 check 'or short circuit'    'no'        'false || echo no'
@@ -106,7 +106,7 @@ check 'lua expression'      '2'         ':1 + 1'
 check 'lua function'        'HI'        ':function up(x) return string.upper(x[1]) end' 'echo hi | up'
 check 'lua returns table'   'a
 b'                                      ':function two() return {"a","b"} end' 'two'
-check 'lua into external'   '2'         ':function two() return {"a","b"} end' 'two | wc -l'
+check 'lua into external'   '2'         ':function two() return {"a","b"} end' 'two | wc -l | tr -d " "'
 check 'lua value redirect'  'v'         ':function one() return "v" end' 'one > f7' 'cat f7'
 check 'sh() from lua'       'from-lua
 0'                                      ':sh("echo from-lua")'

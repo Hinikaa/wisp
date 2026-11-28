@@ -81,7 +81,9 @@ jobs:
         run: |
           make clean
           LUA_PREFIX=$(brew --prefix lua@5.4)
-          make wisp LUA_CFLAGS="-I${LUA_PREFIX}/include/lua5.4 -I${LUA_PREFIX}/include" LUA_LIBS="${LUA_PREFIX}/lib/liblua5.4.a -lm"
+          LUA_STATIC=$(find "${LUA_PREFIX}/lib" -name 'liblua*.a' | head -n 1)
+          test -n "$LUA_STATIC"
+          make wisp LUA_CFLAGS="-I${LUA_PREFIX}/include/lua -I${LUA_PREFIX}/include" LUA_LIBS="$LUA_STATIC -lm"
           strip wisp
           otool -L wisp
           ! otool -L wisp | grep -i liblua

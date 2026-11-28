@@ -480,6 +480,7 @@ bool parse_signal_spec(const std::string& arg, int& sig_out) {
 
 Executor::Executor(lua_State* L) : L_(L) {
     lua_env::set_shell_callback([this](const std::string& cmd) { return run_line_str(cmd); });
+    lua_env::set_capture_callback([this](const std::string& cmd) { return capture_command(cmd); });
 }
 
 void Executor::init_job_control() {
@@ -531,7 +532,7 @@ int Executor::run_line_str(const std::string& line) {
         parsed = parse_line(line);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());
-        last_status_ = 2;
+        set_status(2);
         return 2;
     }
     return run_line(parsed);
@@ -547,7 +548,7 @@ int Executor::run_line(const Line& line) {
             status = 1;
         }
     }
-    last_status_ = status;
+    set_status(status);
     return status;
 }
 
@@ -671,15 +672,15 @@ std::vector<std::string> Executor::expand_words(const Word& w) {
     return result;
 }
 
-std::string Executor::run_command_substitution(const std::string& inner) {
+std::pair<std::string, int> Executor::capture_command(const std::string& inner) {
     int pipefd[2];
-    if (pipe(pipefd) != 0) return "";
+    if (pipe(pipefd) != 0) return {"", 1};
     std::fflush(nullptr); // else the child inherits a copy of our pending output
     pid_t pid = fork();
     if (pid < 0) {
         close(pipefd[0]);
         close(pipefd[1]);
-        return "";
+        return {"", 1};
     }
     if (pid == 0) {
         close(pipefd[0]);
@@ -727,7 +728,12 @@ std::string Executor::run_command_substitution(const std::string& inner) {
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
     while (!out.empty() && out.back() == '\n') out.pop_back();
-    return out;
+    int rc = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
+    return {std::move(out), rc};
+}
+
+std::string Executor::run_command_substitution(const std::string& inner) {
+    return capture_command(inner).first;
 }
 
 std::vector<ExpCmd> Executor::expand_and_classify(const Pipeline& pl) {
@@ -823,7 +829,8 @@ LuaValue Executor::run_native_run(const std::vector<ExpCmd>& cmds, const std::ve
             // Rendered here, inside the redirect, so `f > out` catches the
             // returned value and anything the function printed alike.
             if (last_in_pipeline) {
-                std::string rendered = lua_env::render_value(lua_env::pull_value(L_, -1));
+                bool pretty = isatty(STDOUT_FILENO) != 0;
+                std::string rendered = lua_env::render_value(lua_env::pull_value(L_, -1), pretty);
                 std::fwrite(rendered.data(), 1, rendered.size(), stdout);
             }
         }
@@ -881,6 +888,23 @@ int Executor::run_builtin(const std::vector<std::string>& argv) {
             if (eq == std::string::npos) continue;
             setenv(argv[i].substr(0, eq).c_str(), argv[i].substr(eq + 1).c_str(), 1);
         }
+        return 0;
+    }
+    if (name == "unset") {
+        for (size_t i = 1; i < argv.size(); ++i) unsetenv(argv[i].c_str());
+        return 0;
+    }
+    if (name == "history") {
+        if (!history_cb_) return 0;
+        auto entries = history_cb_();
+        size_t start = 0;
+        if (argv.size() > 1) {
+            int n = std::atoi(argv[1].c_str());
+            if (n > 0 && static_cast<size_t>(n) < entries.size())
+                start = entries.size() - static_cast<size_t>(n);
+        }
+        for (size_t i = start; i < entries.size(); ++i)
+            std::printf("%4zu  %s\n", i + 1, entries[i].c_str());
         return 0;
     }
     if (name == "jobs") {

@@ -167,6 +167,21 @@ def main():
             ("tab filename completion does not duplicate command (issue #1)",
              [(0.4, None), (0.2, b"cd .conf\t"), (0.4, b"\r"), (0.3, b"pwd\r"), (0.3, b"exit\r")],
              [os.path.join(home, ".config")], ["cd cd"], home),
+            ("tab completes command after pipe",
+             [(0.4, None), (0.2, b"files | cou\t"), (0.4, b"\r"), (0.3, b"exit\r")],
+             ["0"], ["command not found"], home),
+            ("right arrow accepts history autosuggestion",
+             [(0.4, None), (0.2, b"echo ghost-target\r"), (0.3, b"echo ghost"),
+              (0.2, b"\x1b[C"), (0.2, b"-ok\r"), (0.3, b"exit\r")],
+             ["ghost-target-ok"], [], None),
+            ("history builtin prints past commands",
+             [(0.4, None), (0.2, b"echo hist-marker\r"),
+              (0.3, b"history 3 | grep -o hist-marker\r"), (0.3, b"exit\r")],
+             ["hist-marker"], [], None),
+            ("pretty table renders columns on tty",
+             [(0.4, None), (0.2, b":function r() return {{name='a', size=7}} end\r"),
+              (0.3, b"r\r"), (0.3, b"exit\r")],
+             ["name  size", "a        7"], ["name=a"], None),
         ]
 
         failed = 0

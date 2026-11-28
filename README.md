@@ -23,24 +23,24 @@
 
 ## What is wisp?
 
-wisp is a daily-drivable Linux shell with proper job control, tab completion, globbing, and history search, except Lua 5.4 replaces bash scripting and config syntax.
+wisp is a daily-drivable Linux shell with proper job control, tab completion, inline history autosuggestions, globbing, and reverse history search, except Lua 5.4 replaces bash scripting and config syntax.
 
-Any global function you put in `~/.config/wisp/init.lua` automatically becomes a shell command. Better yet, when you pipe one Lua function into another, wisp runs them in-process and passes the actual Lua table straight to the next stage instead of turning everything into text and parsing it back out. As soon as a pipeline hits a normal binary on `$PATH` (like `grep` or `wc`), wisp forks and converts the table to plain text at that boundary automatically.
+Any global function you put in `~/.config/wisp/init.lua` automatically becomes a shell command. When you pipe one Lua function into another, wisp runs them in-process and passes the actual Lua table straight to the next stage instead of turning everything into text and parsing it back out. In a terminal, lists of records render as aligned tables; as soon as you pipe into a normal binary on `$PATH` (like `grep` or `wc`) or redirect to a file, wisp converts them to plain `key=value` lines automatically.
 
-Everything stays dynamically typed with normal Lua values (`string`, `number`, `table`, `boolean`, `nil`). The whole shell is ~2,860 lines of C++17, compiles down to a ~344K stripped binary, and starts faster than bash.
+Everything stays dynamically typed with normal Lua values (`string`, `number`, `table`, `boolean`, `nil`). The whole shell is ~3,350 lines of C++17, compiles down to a ~396K stripped binary, and starts faster than bash.
 
 ## Install
 
-### Prebuilt binary
+### Prebuilt binaries
 
-Grab `wisp-linux-x86_64.tar.gz` from the [Releases](https://github.com/hinikaa/wisp/releases) page, extract it, and put `wisp` somewhere on your `$PATH`.
+Grab `wisp-linux-x86_64.tar.gz` or `wisp-linux-aarch64.tar.gz` from the [Releases](https://github.com/hinikaa/wisp/releases) page, extract it, and put `wisp` on your `$PATH`. Release binaries link Lua 5.4 statically so they run across distros without library version mismatches.
 
 ### Build from source
 
 You'll need a C++17 compiler and Lua 5.4 development headers discoverable via `pkg-config`:
 
 - **Debian / Ubuntu:** `sudo apt install liblua5.4-dev`
-- **Arch:** `sudo pacman -S lua54`
+- **Arch:** `sudo pacman -S lua54` (an AUR-ready [`PKGBUILD`](packaging/aur/PKGBUILD) is also included under `packaging/aur/`)
 
 Then build and install:
 
@@ -66,13 +66,38 @@ chsh -s /usr/local/bin/wisp
 
 ## Quick tour
 
-### Config and structured pipelines
+### Structured pipelines out of the box
 
-Copy [`example-init.lua`](example-init.lua) to `~/.config/wisp/init.lua` (or `$XDG_CONFIG_HOME/wisp/init.lua`) to get started. There's no special alias or config syntax; it's just Lua:
+wisp ships with a small built-in prelude (`files`, `where`, `sort_by`, `cols`, `take`, `skip`, `count`, `lines`, `to_json`), so structured pipelines work right away with zero config:
+
+```text
+wisp> files | where type == file | sort_by size desc | take 4 | cols name size
+name           size
+────────────  ─────
+linenoise.c   86505
+executor.cpp  51728
+lua_env.cpp   24921
+main.cpp      13764
+
+wisp> files | where name ~= %.cpp$ | count
+5
+
+wisp> files | where name == main.cpp | cols name type | to_json
+[{"name":"main.cpp","type":"file"}]
+```
+
+Every stage above runs in-process on the Lua stack with no forks. Adding `| wc -l` or `> out.txt` renders the table to text only at that boundary.
+
+### Config (`~/.config/wisp/init.lua`)
+
+Copy [`example-init.lua`](example-init.lua) to `~/.config/wisp/init.lua` (or `$XDG_CONFIG_HOME/wisp/init.lua`) to customize wisp. There's no special alias or config syntax; it's just Lua:
 
 ```lua
 function prompt()
-  return "wisp> "
+  local branch = capture("git branch --show-current 2>/dev/null")
+  local git = branch ~= "" and (" (" .. branch .. ")") or ""
+  local err = wisp.status ~= 0 and (" [" .. wisp.status .. "]") or ""
+  return "wisp" .. git .. err .. "> "
 end
 
 -- Plain command: first arg is pipeline input (nil if none), rest are shell args
@@ -84,32 +109,13 @@ end
 function ll()
   sh("ls -la")
 end
-
--- Pipeline stages pass real Lua tables in-process
-function nums()
-  return { { n = 3 }, { n = 1 }, { n = 2 } }
-end
-
-function sorted(input)
-  table.sort(input, function(a, b) return a.n < b.n end)
-  return input
-end
 ```
 
-At the prompt:
-
-```text
-wisp> greet world
-hello, world
-wisp> nums | sorted
-n=1
-n=2
-n=3
-wisp> nums | sorted | wc -l
-3
-```
-
-In `nums | sorted`, neither stage forks; `sorted` gets the exact Lua table returned by `nums`. Adding `| wc -l` renders the rows to text only when handing off to `wc`.
+Built-in Lua helpers available in configs and scripts:
+- `sh(cmd)` — runs a shell command line and returns its exit code
+- `capture(cmd)` — runs a shell command line and returns `(stdout, exit_code)`
+- `setenv(key, val)` — sets an environment variable
+- `wisp.status` / `wisp.version` — last exit status and shell version
 
 If a Lua function shadows a real binary (for example you define `function ls()`), `command ls` bypasses the Lua function and runs `/usr/bin/ls`.
 
@@ -155,9 +161,10 @@ step 2
 step 3
 ```
 
-### Tab completion, history, and typo hints
+### Completion, autosuggestions, history, and typo hints
 
-- **Tab completion** completes builtins, Lua global functions, and `$PATH` executables for the first word, filenames (including `~/...`, with `/` on directories) for arguments, and Lua globals / nested table keys when typing `:prefix` or `:table.prefix`.
+- **Tab completion** completes builtins, Lua global functions, and `$PATH` executables in command position (including right after `|`, `&&`, `||`, `;`, and `command`), filenames (including `~/...`, with `/` on directories) for arguments, and Lua globals / nested table keys when typing `:prefix` or `:table.prefix`.
+- **Inline autosuggestions** show the most recent matching history entry as faint gray ghost text while you type — press `Right` (or `Ctrl-F`) at the end of the line to accept it.
 - **`Ctrl-R`** does reverse incremental search through `~/.wisp_history` (`Ctrl-R` for older matches, `Enter` to run, `Esc` to edit, `Ctrl-C` to cancel).
 - **Typo suggestions** check `$PATH` executables by edit distance (treating swapped adjacent characters as a single edit):
   ```text
@@ -172,6 +179,8 @@ step 3
 | `pwd` | Print working directory |
 | `echo [-n] [-e]` | Print arguments (`-n` no newline, `-e` escapes like `\n`/`\t`/`\\`, `-ne` combined) |
 | `export VAR=val` | Export environment variables |
+| `unset VAR [...]` | Remove environment variables |
+| `history [N]` | Print command history (all, or the last `N` entries) |
 | `source file.lua` | Load and run a Lua file in the current session |
 | `type cmd` | Show whether `cmd` is a builtin, Lua function, or `$PATH` executable |
 | `command cmd` | Run a `$PATH` executable directly, skipping same-named Lua functions |
@@ -201,19 +210,19 @@ wisp> :local socket = require("socket"); print(socket._VERSION)
 ### CLI flags & scripts
 
 ```sh
-wisp                            # interactive shell
-wisp -c 'ls | wc -l'            # run a shell command (for $SHELL, git aliases, etc.)
-wisp -c ':print(42 * 10)'       # leading ':' switches -c to Lua
+wisp                                 # interactive shell
+wisp -c 'ls | wc -l'                 # run a shell command (for $SHELL, git aliases, etc.)
+wisp -c ':print(42 * 10)'            # leading ':' switches -c to Lua
 wisp -e 'for i=1,5 do print(i) end'  # run a Lua chunk directly
-wisp -f script.lua              # run a Lua script file
-wisp --version                  # print version
+wisp -f script.lua foo bar           # run a Lua script (args exposed via Lua's `arg` table)
+wisp --version                       # print version
 ```
 
-Shebang scripts work too:
+Shebang scripts work too (with command-line arguments in `arg[1]`, `arg[2]`, ...):
 
 ```lua
 #!/usr/bin/env wisp
-print("hello from script")
+print("hello", arg[1] or "world")
 ```
 
 ## What wisp doesn't do
@@ -224,7 +233,7 @@ Some of this is intentional, some just isn't built yet:
 - **No word splitting on variable expansion.** If `$VAR` holds `a b`, it stays one argument (closer to fish than POSIX).
 - **No bash arrays (`arr=(1 2 3)`), `[[ ]]`, heredocs (`<<EOF`), `$1`..`$9`, or `${!prefix*}` / `${VAR+alt}`.**
 - **No sandboxing of `init.lua`.** It has full Lua stdlib access, same trust model as `.bashrc`.
-- **Backgrounding an all-native Lua pipeline (`nums | sorted &`)** runs in the foreground with a notice, since there's no child process to background.
+- **Backgrounding an all-native Lua pipeline (`files | sort_by size &`)** runs in the foreground with a notice, since there's no child process to background.
 
 ## Benchmarks
 
@@ -232,13 +241,13 @@ Measured on x86-64 Linux with `g++ 16`, Lua 5.4, bash 5.3, zsh 5.9, and dash 0.5
 
 | Metric | wisp | bash 5.3 | zsh 5.9 | dash 0.5 | lua 5.4 |
 |---|---:|---:|---:|---:|---:|
-| Stripped binary | 344K | 1.1M | ~900K | **~120K** | 318K |
-| Source lines | **2,864** | ~500K | ~250K | ~20K | ~25K |
+| Stripped binary | 396K | 1.1M | ~900K | **~120K** | 318K |
+| Source lines | **3,356** | ~500K | ~250K | ~20K | ~25K |
 | Startup (best of 40) | 0.55ms | 2.1ms | 1.2ms | 1.2ms | 1.5ms |
 | Throughput (500 runs avg) | 1.07ms | 1.66ms | — | — | — |
 | Peak RSS | **2.9MB** | 5.7MB | — | — | 2.4MB |
 
-A couple caveats: the machine wasn't completely idle, so treat the relative ordering as more meaningful than exact sub-millisecond numbers. By default the `Makefile` links `libstdc++` and `libgcc` statically, which adds ~200K to the binary size in exchange for avoiding shared-library relocation on every shell spawn. If you prefer a smaller binary, `make STATIC_CXX= LTO=` drops it to ~180K with startup roughly on par with bash.
+A couple caveats: the machine wasn't completely idle, so treat the relative ordering as more meaningful than exact sub-millisecond numbers. By default the `Makefile` links `libstdc++` and `libgcc` statically, which adds ~200K to the binary size in exchange for avoiding shared-library relocation on every shell spawn. If you prefer a smaller binary, `make STATIC_CXX= LTO=` drops it to ~220K with startup roughly on par with bash.
 
 For structured pipelines, running `nums | sorted | count` over 10,000 records 100 times takes ~430ms, matching `seq 10000 | sort -n | wc -l` through coreutils while keeping records directly indexable as Lua tables.
 
@@ -246,13 +255,13 @@ For structured pipelines, running `nums | sorted | count` over 10,000 records 10
 
 | Feature | wisp | bash / zsh | dash | fish | nushell | PowerShell |
 |---|---|---|---|---|---|---|
-| Interactive REPL & Ctrl-R | yes | yes | no | yes | yes | yes |
+| Interactive REPL, hints & Ctrl-R | yes | yes | no | yes | yes | yes |
 | Job control (`fg`/`bg`) | yes | yes | no | yes | partial | no |
 | Globs & brace expansion | yes | yes | globs | yes | globs | no |
 | Config language | **Lua 5.4** | shell DSL | none | fish DSL | Nu | PowerShell |
 | Structured pipelines | **Lua tables** | text | text | text | tables | .NET objects |
 | POSIX-style interactive syntax | mostly | yes | yes | no | no | no |
-| Binary size | **344K** | 1.1M / 900K | ~120K | ~1M | ~15M | 200M+ |
+| Binary size | **396K** | 1.1M / 900K | ~120K | ~1M | ~15M | 200M+ |
 
 ## Under the hood
 
@@ -271,4 +280,4 @@ If you're curious how the codebase is put together, it's five C++ files (`main.c
 
 MIT License — see [`LICENSE`](LICENSE).
 
-Line editing uses vendored [`linenoise`](https://github.com/antirez/linenoise) (BSD-2-Clause, see [`LINENOISE_LICENSE`](LINENOISE_LICENSE)), copyright Salvatore Sanfilippo and Pieter Noordhuis, with one small local patch adding `Ctrl-R` reverse incremental history search.
+Line editing uses vendored [`linenoise`](https://github.com/antirez/linenoise) (BSD-2-Clause, see [`LINENOISE_LICENSE`](LINENOISE_LICENSE)), copyright Salvatore Sanfilippo and Pieter Noordhuis, with small local patches for `Ctrl-R` reverse incremental search, Right-arrow hint acceptance, and read-only history access.

@@ -1,8 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <sys/types.h>
 #include <termios.h>
+#include <utility>
 #include <vector>
 
 #include "lua_env.h"
@@ -78,7 +80,13 @@ public:
     void reap_background();
 
     int last_status() const { return last_status_; }
-    void set_status(int s) { last_status_ = s; }
+    void set_status(int s) {
+        last_status_ = s;
+        lua_env::set_status(L_, s);
+    }
+
+    using HistoryCallback = std::function<std::vector<std::string>()>;
+    void set_history_callback(HistoryCallback cb) { history_cb_ = std::move(cb); }
 
 private:
     int run_line(const Line& line);
@@ -89,6 +97,7 @@ private:
     Word expand_word(const Word& w);
     std::string expand_word_str(const Word& w);
     std::vector<std::string> expand_words(const Word& w);
+    std::pair<std::string, int> capture_command(const std::string& inner);
     std::string run_command_substitution(const std::string& inner);
 
     std::vector<ExpCmd> expand_and_classify(const Pipeline& pl);
@@ -112,4 +121,5 @@ private:
     int next_job_id_ = 1;
     int last_status_ = 0;
     std::string prev_dir_;
+    HistoryCallback history_cb_;
 };

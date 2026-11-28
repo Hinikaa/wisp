@@ -13,9 +13,9 @@
 // (classifies a word as Builtin before looking for a Lua function), and
 // main.cpp (tab completion).
 
-inline constexpr std::array<const char*, 15> kBuiltins = {
-    "cd", "exit", "export", "command", "jobs", "fg", "bg", "kill",
-    "source", "echo", "disown", "wait", "pwd", "type", "pkg",
+inline constexpr std::array<const char*, 17> kBuiltins = {
+    "cd", "exit", "export", "unset", "command", "jobs", "fg", "bg", "kill",
+    "source", "echo", "disown", "wait", "pwd", "type", "pkg", "history",
 };
 
 inline bool is_builtin_name(const std::string& name) {

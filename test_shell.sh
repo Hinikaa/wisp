@@ -96,10 +96,11 @@ b'                                      'echo -e "a\nb"'
 check 'echo -ne combined'   'a	b'       'echo -ne "a\tb"'
 check 'scoped env builtin'  'ok
 []'                                     'SCOPED_X=1 echo ok' 'echo [$SCOPED_X]'
+check 'unset var'           '[]'        'export TMP_U=1' 'unset TMP_U' 'echo [$TMP_U]'
 check 'unknown command'     'wisp: definitely-not-a-command-zz: command not found' \
                                         'definitely-not-a-command-zz'
 
-# --- lua ---------------------------------------------------------------------
+# --- lua & structured prelude ------------------------------------------------
 check 'lua sigil'           '42'        ':print(6 * 7)'
 check 'lua expression'      '2'         ':1 + 1'
 check 'lua function'        'HI'        ':function up(x) return string.upper(x[1]) end' 'echo hi | up'
@@ -109,16 +110,25 @@ check 'lua into external'   '2'         ':function two() return {"a","b"} end' '
 check 'lua value redirect'  'v'         ':function one() return "v" end' 'one > f7' 'cat f7'
 check 'sh() from lua'       'from-lua
 0'                                      ':sh("echo from-lua")'
+check 'capture() from lua'  'cap-ok	0'  ':local o, r = capture("echo cap-ok"); return o, r'
+check 'wisp.status tracks'  '1'         'false' ':wisp.status'
+check 'files + where + count' '2'       'files | where name ~= %.zz$ | count'
+check 'sort_by + cols + take' 'name=g2.zz' 'files | where name ~= %.zz$ | sort_by name desc | take 1 | cols name'
+check 'skip + count'        '1'         'files | where name ~= %.zz$ | skip 1 | count'
+check 'to_json'             '[{"name":"g1.zz"}]' 'files | where name == g1.zz | cols name | to_json'
 check 'sigpipe survival'    '1
 survived'                               ':function big() local t={} for i=1,5000 do t[i]=tostring(i) end return t end' 'big | head -n 1' 'echo survived'
 
 # --- argv --------------------------------------------------------------------
-check_arg '--version'       'wisp 3.1.0' --version
+printf 'print(arg[1], arg[2])\n' > "$tmp/args.lua"
+check_arg '--version'       'wisp 3.2.0' --version
 check_arg '-c runs shell'   'hi'        -c 'echo hi'
 check_arg '-c chains'       'a
 b'                                      -c 'echo a && echo b'
 check_arg '-c lua sigil'    '42'        -c ':print(42)'
 check_arg '-e runs lua'     '42'        -e 'print(42)'
+check_arg '-f script args'  'foo	bar' -f "$tmp/args.lua" foo bar
+check_arg 'direct script args' 'x	y'  "$tmp/args.lua" x y
 check_arg '-c needs arg'    'wisp: -c requires an argument' -c
 
 printf '%s\n' "test_shell: $pass passed, $fail failed"

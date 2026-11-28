@@ -1,34 +1,33 @@
 -- Example wisp config. Copy to ~/.config/wisp/init.lua and edit.
 --
--- There is no config DSL: this is ordinary Lua, and every global function you
--- define here becomes a command you can type at the prompt.
+-- There is no config DSL: this is plain Lua 5.4, and every global function
+-- you define here becomes a command you can run at the prompt.
 
 function prompt()
-    return "wisp> "
+    local branch = capture("git branch --show-current 2>/dev/null")
+    local git = branch ~= "" and (" (" .. branch .. ")") or ""
+    local err = wisp.status ~= 0 and (" [" .. wisp.status .. "]") or ""
+    return "wisp" .. git .. err .. "> "
 end
 
--- A plain command. The first parameter is the pipeline input (nil when this
--- is the first stage); the rest are the shell words you typed after it.
+-- Plain command: first arg is pipeline input (nil if none), rest are shell args.
 function greet(_, who)
     print("hello, " .. (who or "world"))
 end
 
--- Aliases are just functions -- no separate alias syntax to learn.
+-- Aliases are just functions calling sh().
 function ll()
     sh("ls -la")
 end
 
--- A pipeline source: returns a list of records rather than text.
-function nums()
-    return { { n = 3, tag = "c" }, { n = 1, tag = "a" }, { n = 2, tag = "b" } }
+-- Custom structured pipeline stage: receives the previous stage's Lua table
+-- directly in-process and returns a new table for the next stage.
+function big_files()
+    return where(files(), "size", ">", 1024)
 end
 
--- A pipeline stage: receives the previous stage's value and returns the next
--- one. No parsing, no re-serializing -- `input` is the actual Lua table.
-function sorted(input)
-    table.sort(input, function(a, b) return a.n < b.n end)
-    return input
-end
-
---   wisp> nums | sorted           -- both stages in-process, no fork
---   wisp> nums | sorted | wc -l   -- rendered to text only at the boundary
+-- Out of the box, wisp includes: files, where, sort_by, cols, take, skip,
+-- count, lines, and to_json. Try:
+--   wisp> files | where type == file | sort_by size desc | take 5 | cols name size
+--   wisp> files | where name ~= %.cpp$ | count
+--   wisp> big_files | sort_by size desc | to_json

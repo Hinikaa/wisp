@@ -1547,11 +1547,20 @@ void linenoiseEditMoveLeft(struct linenoiseState *l) {
     }
 }
 
-/* Move cursor on the right. Moves by one UTF-8 character, not byte. */
+/* Move cursor on the right. Moves by one UTF-8 character, not byte.
+ * Local addition for wisp: at end-of-line, accept the active hint if any. */
 void linenoiseEditMoveRight(struct linenoiseState *l) {
     if (l->pos != l->len) {
         l->pos += linenoiseEditNextLen(l, l->pos);
         refreshLine(l);
+    } else if (hintsCallback) {
+        int color = -1, bold = 0;
+        char *hint = hintsCallback(l->buf, &color, &bold);
+        if (hint) {
+            size_t hlen = strlen(hint);
+            if (hlen > 0) linenoiseEditInsert(l, hint, hlen);
+            if (freeHintsCallback) freeHintsCallback(hint);
+        }
     }
 }
 
@@ -2423,6 +2432,15 @@ int linenoiseHistorySetMaxLen(int len) {
     if (history_len > history_max_len)
         history_len = history_max_len;
     return 1;
+}
+
+/* Local additions for wisp: read-only history inspection. */
+int linenoiseHistoryCount(void) {
+    return history_len;
+}
+
+const char *linenoiseHistoryGet(int idx) {
+    return (idx >= 0 && idx < history_len) ? history[idx] : NULL;
 }
 
 /* Save the history in the specified file. On success 0 is returned

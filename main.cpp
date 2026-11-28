@@ -21,7 +21,7 @@ extern "C" {
 #include "linenoise.h"
 #include "lua_env.h"
 
-#define WISP_VERSION "3.1.0"
+#define WISP_VERSION "3.2.0"
 
 namespace {
 
@@ -46,6 +46,40 @@ std::string history_path() {
 
 bool starts_with(const std::string& s, const std::string& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool is_cmd_delim(char c) { return c == '|' || c == ';' || c == '&'; }
+
+// True when the token starting at `tok_start` sits in command position:
+// start of line, immediately after | / ; / & (ignoring spaces), or right
+// after a `command` prefix at command position.
+bool is_command_position(const std::string& s, size_t tok_start) {
+    size_t j = tok_start;
+    while (j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t')) --j;
+    if (j == 0 || is_cmd_delim(s[j - 1])) return true;
+
+    size_t word_end = j;
+    while (j > 0 && s[j - 1] != ' ' && s[j - 1] != '\t' && !is_cmd_delim(s[j - 1])) --j;
+    if (word_end - j == 7 && s.compare(j, 7, "command") == 0) {
+        while (j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t')) --j;
+        return j == 0 || is_cmd_delim(s[j - 1]);
+    }
+    return false;
+}
+
+char* history_hint(const char* buf, int* color, int* bold) {
+    if (!buf || !*buf) return nullptr;
+    size_t blen = std::strlen(buf);
+    // history[count - 1] is the live line being edited, so start at count - 2.
+    for (int i = linenoiseHistoryCount() - 2; i >= 0; --i) {
+        const char* entry = linenoiseHistoryGet(i);
+        if (entry && std::strncmp(entry, buf, blen) == 0 && entry[blen] != '\0') {
+            *color = 90; // dim gray
+            *bold = 0;
+            return strdup(entry + blen);
+        }
+    }
+    return nullptr;
 }
 
 void completion(const char* buf, linenoiseCompletions* lc) {
@@ -107,12 +141,16 @@ void completion(const char* buf, linenoiseCompletions* lc) {
         return;
     }
 
-    size_t last_space = s.find_last_of(' ');
-    bool first_word = (last_space == std::string::npos);
-    std::string prefix = first_word ? s : s.substr(last_space + 1);
-    std::string before = first_word ? "" : s.substr(0, last_space + 1);
+    size_t tok_start = s.size();
+    while (tok_start > 0 && s[tok_start - 1] != ' ' && s[tok_start - 1] != '\t' &&
+           !is_cmd_delim(s[tok_start - 1])) {
+        --tok_start;
+    }
+    bool cmd_pos = is_command_position(s, tok_start);
+    std::string prefix = s.substr(tok_start);
+    std::string before = s.substr(0, tok_start);
 
-    if (prefix.empty() && first_word) return;
+    if (prefix.empty() && cmd_pos) return;
 
     std::set<std::string> seen;
 
@@ -121,7 +159,7 @@ void completion(const char* buf, linenoiseCompletions* lc) {
             linenoiseAddCompletion(lc, (before + name).c_str());
     };
 
-    if (first_word) {
+    if (cmd_pos) {
         for (const char* b : kBuiltins)
             if (starts_with(b, prefix)) add_if_new(b);
 
@@ -240,9 +278,18 @@ int run_lua_sigil(lua_State* L, std::string chunk) {
     return 0;
 }
 
-// Loads and runs a Lua file: `-f script.lua`, or a shebang'd script wisp was
-// invoked on directly.
-static int run_script(lua_State* L, const char* path) {
+// Loads and runs a Lua file: `-f script.lua [args...]`, or a shebang'd script
+// wisp was invoked on directly. Populates Lua's standard `arg` table.
+static int run_script(lua_State* L, const char* path, int argc, char** argv, int arg_start) {
+    lua_newtable(L);
+    lua_pushstring(L, path);
+    lua_rawseti(L, -2, 0);
+    for (int i = arg_start; i < argc; ++i) {
+        lua_pushstring(L, argv[i]);
+        lua_rawseti(L, -2, i - arg_start + 1);
+    }
+    lua_setglobal(L, "arg");
+
     if (luaL_loadfile(L, path) != LUA_OK) {
         std::fprintf(stderr, "wisp: %s: %s\n", path, lua_tostring(L, -1));
         lua_settop(L, 0);
@@ -299,13 +346,24 @@ int main(int argc, char** argv) {
         return status;
     }
     if (std::strcmp(flag, "-e") == 0) return run_lua_sigil(L, argv[2]);
-    if (std::strcmp(flag, "-f") == 0) return run_script(L, argv[2]);
-    if (argc >= 2) return run_script(L, argv[1]);
+    if (std::strcmp(flag, "-f") == 0) return run_script(L, argv[2], argc, argv, 3);
+    if (argc >= 2) return run_script(L, argv[1], argc, argv, 2);
 
     Executor exec(L);
     exec.init_job_control();
+    exec.set_history_callback([]() {
+        std::vector<std::string> out;
+        int n = linenoiseHistoryCount();
+        out.reserve(n > 0 ? static_cast<size_t>(n) : 0);
+        for (int i = 0; i < n; ++i) {
+            if (const char* e = linenoiseHistoryGet(i)) out.emplace_back(e);
+        }
+        return out;
+    });
 
     linenoiseSetCompletionCallback(completion);
+    linenoiseSetHintsCallback(history_hint);
+    linenoiseSetFreeHintsCallback(std::free);
     linenoiseSetMultiLine(1); // long lines wrap instead of scrolling over themselves
     linenoiseHistorySetMaxLen(1000);
     std::string hist = history_path();
@@ -331,7 +389,7 @@ int main(int argc, char** argv) {
         if (!line.empty()) {
             linenoiseHistoryAdd(line.c_str());
             if (!hist.empty()) linenoiseHistorySave(hist.c_str());
-            if (line[0] == ':') run_lua_sigil(L, line.substr(1));
+            if (line[0] == ':') exec.set_status(run_lua_sigil(L, line.substr(1)));
             else exec.run_line_str(line);
         }
         exec.reap_background();

@@ -50,14 +50,17 @@ private:
     struct sigaction old_ {};
 };
 
-// Called by the shell's `sh()` Lua binding to run a raw shell-syntax command
-// line from within Lua. Registered once at startup by main.cpp (which owns
-// the Executor); breaks the lua_env <-> executor circular dependency.
+// Called by the shell's `sh()` and `capture()` Lua bindings to run a raw
+// shell-syntax command line from within Lua. Registered once at startup by
+// Executor; breaks the lua_env <-> executor circular dependency.
 using ShellCallback = std::function<int(const std::string& cmdline)>;
+using CaptureCallback = std::function<std::pair<std::string, int>(const std::string& cmdline)>;
 void set_shell_callback(ShellCallback cb);
+void set_capture_callback(CaptureCallback cb);
 
-lua_State* init();                 // luaL_newstate + openlibs + sh()/setenv() bindings
+lua_State* init();                 // luaL_newstate + openlibs + bindings + structured prelude
 void close(lua_State* L);
+void set_status(lua_State* L, int status); // updates Lua's `wisp.status`
 
 std::string default_config_path(); // ~/.config/wisp/init.lua, honors $XDG_CONFIG_HOME
 // Missing file: proceeds with empty config. Broken file: warns on stderr, doesn't abort.
@@ -90,9 +93,10 @@ LuaValue call_lua_function(lua_State* L, const std::string& name,
                             const std::vector<std::string>& argv,
                             const LuaValue& input, bool has_input);
 
-// Row-per-line "key=value key=value" rendering for a value ending a native
-// pipeline (terminal display) or crossing into an external process's stdin
-// (serialization) -- deliberately not column-aligned, see README.
-std::string render_value(const LuaValue& v);
+// Renders a LuaValue for display or serialization. When `pretty` is false
+// (external pipe boundary or redirected output), records use row-per-line
+// `key=value` format. When `pretty` is true (interactive TTY), lists of
+// records render as aligned columns with a header rule.
+std::string render_value(const LuaValue& v, bool pretty = false);
 
 } // namespace lua_env

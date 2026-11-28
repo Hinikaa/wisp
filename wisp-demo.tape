@@ -1,8 +1,7 @@
 # vhs wisp-demo.tape  ->  wisp-demo.gif
 #
 # Self-contained: writes its own init.lua into a throwaway XDG_CONFIG_HOME so
-# the recording reproduces anywhere, instead of depending on whatever config
-# the person recording happens to have.
+# the recording reproduces anywhere.
 
 Output wisp-demo.gif
 Set FontSize 16
@@ -15,55 +14,43 @@ Set TypingSpeed 35ms
 Hide
 Type "export XDG_CONFIG_HOME=$(mktemp -d); mkdir -p $XDG_CONFIG_HOME/wisp"
 Enter
-Type "cp example-init.lua $XDG_CONFIG_HOME/wisp/init.lua; clear"
+Type "clear"
 Enter
 Show
 
-Sleep 1
+Sleep 0.8
 Type "./wisp"
 Enter
-Sleep 1.2
+Sleep 1.0
 
-Type "echo hi | wc -c"
+Type "files | where type == file | sort_by size desc | take 5 | cols name size"
 Enter
-Sleep 1
+Sleep 2.0
 
-Type "echo $(uname -s) build > /tmp/w && cat /tmp/w"
+Type "files | where name ~= %.cpp$ | count"
 Enter
-Sleep 1.3
+Sleep 1.4
 
-Type "echo {1..5} and {a,b}{1,2}"
+Type "files | where name ~= %.h$ | cols name size | take 2 | to_json"
 Enter
-Sleep 1.3
+Sleep 1.8
 
-Type "echo HEAD@{1} stays literal"
+Type "echo {a,b}{1..3} && echo $(uname -s)"
 Enter
-Sleep 1.3
+Sleep 1.4
 
-Type ":1 + 1"
+Type ":for i = 1, 3 do print('lua #' .. i) end"
 Enter
-Sleep 1
-
-Type "nums | sorted"
-Enter
-Sleep 1.6
-
-Type "nums | sorted | wc -l"
-Enter
-Sleep 1.6
-
-Type "greet wisp"
-Enter
-Sleep 1.3
+Sleep 1.4
 
 Type "grpe pattern"
 Enter
-Sleep 1.6
+Sleep 1.5
 
 Type "exit"
 Enter
-Sleep 0.8
+Sleep 0.6
 
-Type "./wisp -c 'ls *.cpp | wc -l'   # -c is shell syntax: usable as $SHELL"
+Type "./wisp -c 'files | where name ~= %.cpp$ | count'"
 Enter
-Sleep 2.5
+Sleep 2.0

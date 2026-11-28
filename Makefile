@@ -21,8 +21,8 @@ LUA_PKG := $(shell for p in lua5.4 lua-5.4 lua54 lua; do pkg-config --exists $$p
 ifeq ($(LUA_PKG),)
 $(error lua5.4 not found via pkg-config; tried lua5.4, lua-5.4, lua54, lua -- install your distro's lua5.4 dev package)
 endif
-LUA_CFLAGS := $(shell pkg-config --cflags $(LUA_PKG))
-LUA_LIBS := $(shell pkg-config --libs $(LUA_PKG))
+LUA_CFLAGS ?= $(shell pkg-config --cflags $(LUA_PKG))
+LUA_LIBS ?= $(shell pkg-config --libs $(LUA_PKG))
 
 CORE_OBJS = lexer.o parser.o executor.o lua_env.o linenoise.o
 TESTS = test_lexer test_parser test_lua_env test_executor

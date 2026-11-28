@@ -105,6 +105,9 @@ int linenoiseHistoryAdd(const char *line);
 int linenoiseHistorySetMaxLen(int len);
 int linenoiseHistorySave(const char *filename);
 int linenoiseHistoryLoad(const char *filename);
+/* Local additions for wisp: read-only history inspection for hints & `history`. */
+int linenoiseHistoryCount(void);
+const char *linenoiseHistoryGet(int idx);
 
 /* Other utilities. */
 void linenoiseClearScreen(void);

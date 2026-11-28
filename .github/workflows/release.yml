@@ -6,10 +6,15 @@ on:
       - "v*"
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -19,23 +24,47 @@ jobs:
       - name: Run test suite
         run: make test
 
-      - name: Build and strip release binary
+      - name: Build static-Lua release binary
         run: |
-          make wisp
+          make clean
+          LUA_STATIC=$(find /usr/lib -name 'liblua5.4.a' | head -n 1)
+          test -n "$LUA_STATIC"
+          make wisp LUA_LIBS="$LUA_STATIC -lm -ldl"
           strip wisp
+          ldd wisp
+          ! ldd wisp | grep -i liblua
 
       - name: Smoke test
         run: |
           ./wisp --version
           ./wisp --help
+          ./wisp -c 'files | count'
 
       - name: Package release asset
         run: |
           mkdir -p dist
-          tar -czf "dist/wisp-linux-x86_64.tar.gz" wisp README.md LICENSE LINENOISE_LICENSE example-init.lua
+          tar -czf "dist/wisp-linux-${{ matrix.arch }}.tar.gz" wisp README.md LICENSE LINENOISE_LICENSE example-init.lua
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-linux-${{ matrix.arch }}
+          path: dist/wisp-linux-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/wisp-linux-x86_64.tar.gz
+          files: dist/wisp-linux-*.tar.gz
           generate_release_notes: true

@@ -11,8 +11,10 @@ jobs:
       matrix:
         include:
           - arch: x86_64
+            nfpm_arch: amd64
             runner: ubuntu-latest
           - arch: aarch64
+            nfpm_arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -40,16 +42,24 @@ jobs:
           ./wisp --help
           ./wisp -c 'files | count'
 
-      - name: Package release asset
+      - name: Package tarball, .deb, and .rpm
+        env:
+          NFPM_ARCH: ${{ matrix.nfpm_arch }}
         run: |
           mkdir -p dist
           tar -czf "dist/wisp-linux-${{ matrix.arch }}.tar.gz" wisp README.md LICENSE LINENOISE_LICENSE example-init.lua
 
-      - name: Upload artifact
+          export NFPM_VERSION="${GITHUB_REF_NAME#v}"
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
+          NFPM="$(go env GOPATH)/bin/nfpm"
+          "$NFPM" package -f packaging/nfpm.yaml -p deb -t "dist/wisp_${NFPM_VERSION}_${{ matrix.nfpm_arch }}.deb"
+          "$NFPM" package -f packaging/nfpm.yaml -p rpm -t "dist/wisp_${NFPM_VERSION}_${{ matrix.arch }}.rpm"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wisp-linux-${{ matrix.arch }}
-          path: dist/wisp-linux-${{ matrix.arch }}.tar.gz
+          path: dist/*
 
   release:
     needs: build
@@ -66,5 +76,5 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/wisp-linux-*.tar.gz
+          files: dist/*
           generate_release_notes: true

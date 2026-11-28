@@ -31,15 +31,27 @@ Everything stays dynamically typed with normal Lua values (`string`, `number`, `
 
 ## Install
 
-### Prebuilt binaries
+### Quick install (Linux x86_64 / aarch64)
 
-Grab `wisp-linux-x86_64.tar.gz` or `wisp-linux-aarch64.tar.gz` from the [Releases](https://github.com/hinikaa/wisp/releases) page, extract it, and put `wisp` on your `$PATH`. Release binaries link Lua 5.4 statically so they run across distros without library version mismatches.
+```sh
+curl -fsSL https://raw.githubusercontent.com/Hinikaa/wisp/master/install.sh | sh
+```
+
+Release binaries link Lua 5.4 statically so they run across distros without library version mismatches. You can also download `.deb`, `.rpm`, or `.tar.gz` packages directly from the [Releases](https://github.com/hinikaa/wisp/releases) page.
 
 ### Arch Linux (AUR)
 
 ```sh
 yay -S wisp-shell
 # or: paru -S wisp-shell
+```
+
+### Nix / NixOS
+
+Try without installing:
+
+```sh
+nix run github:Hinikaa/wisp
 ```
 
 ### Build from source

@@ -1,0 +1,23 @@
+name: "wisp"
+arch: "${NFPM_ARCH}"
+platform: "linux"
+version: "${NFPM_VERSION}"
+section: "shells"
+priority: "optional"
+maintainer: "hina <192247746+Hinikaa@users.noreply.github.com>"
+description: |
+  Small Linux shell written in C++17 with Lua 5.4 embedded for config,
+  scripting, and structured pipelines.
+homepage: "https://github.com/Hinikaa/wisp"
+license: "MIT"
+contents:
+  - src: ./wisp
+    dst: /usr/bin/wisp
+  - src: ./example-init.lua
+    dst: /usr/share/doc/wisp/example-init.lua
+  - src: ./README.md
+    dst: /usr/share/doc/wisp/README.md
+  - src: ./LICENSE
+    dst: /usr/share/licenses/wisp/LICENSE
+  - src: ./LINENOISE_LICENSE
+    dst: /usr/share/licenses/wisp/LINENOISE_LICENSE

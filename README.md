@@ -1,167 +1,93 @@
-# wisp
+<div align="center">
+  <img src="logo.png" alt="wisp logo" width="110" />
+  <h1>wisp</h1>
+  <p>A small Linux shell written in C++17 with Lua 5.4 embedded for config, scripting, and structured pipelines.</p>
 
-A Linux shell with real job control that uses Lua -- not a bespoke DSL -- as
-its scripting and config language, and passes structured data (Lua tables)
-between pipeline stages instead of just text.
+  <p>
+    <a href="https://github.com/hinikaa/wisp/actions/workflows/ci.yml">
+      <img src="https://github.com/hinikaa/wisp/actions/workflows/ci.yml/badge.svg" alt="CI" />
+    </a>
+    <a href="https://github.com/hinikaa/wisp/releases">
+      <img src="https://img.shields.io/github/v/release/hinikaa/wisp" alt="Release" />
+    </a>
+    <a href="LICENSE">
+      <img src="https://img.shields.io/github/license/hinikaa/wisp" alt="License" />
+    </a>
+    <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17" />
+    <img src="https://img.shields.io/badge/Lua-5.4-000080" alt="Lua 5.4" />
+    <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux" />
+  </p>
+</div>
 
 ![wisp demo](wisp-demo.gif)
 
-## Overview
+## What is wisp?
 
-Any Lua global function you define in `~/.config/wisp/init.lua` becomes
-directly callable as a shell command by name. No separate alias/function
-syntax, no config DSL: it's just Lua, with real closures, loops, and
-conditionals, instead of a shell grammar bolted on top of string
-concatenation.
+wisp is a daily-drivable Linux shell with proper job control, tab completion, globbing, and history search, except Lua 5.4 replaces bash scripting and config syntax.
 
-Consecutive user-defined-function/builtin stages in a pipeline (a "native
-run") execute in-process, chaining Lua values -- typically a list of
-records, e.g. `{ {name="a.txt", size=120}, {name="b.txt", size=44} }` --
-directly from one stage's return value to the next. No fork, no text
-parsing between them. Only when a pipeline actually crosses into a real
-external binary (`grep`, `wc`, anything on `$PATH`) does wisp fork and
-serialize -- structured on one side, bytes on the other, same as your
-terminal's normal stdout/stdin, converted automatically at that boundary.
+Any global function you put in `~/.config/wisp/init.lua` automatically becomes a shell command. Better yet, when you pipe one Lua function into another, wisp runs them in-process and passes the actual Lua table straight to the next stage instead of turning everything into text and parsing it back out. As soon as a pipeline hits a normal binary on `$PATH` (like `grep` or `wc`), wisp forks and converts the table to plain text at that boundary automatically.
 
-This is deliberately not a type-safe language a la Hindley-Milner type
-systems (that's its own research project, see `fxsh`); every pipeline value
-just carries Lua's ordinary runtime type (`string`/`number`/`table`/
-`boolean`/`nil`, inspectable via `type()`) -- strictly more information than
-Bash's "everything is a string," without pretending to statically check
-anything.
+Everything stays dynamically typed with normal Lua values (`string`, `number`, `table`, `boolean`, `nil`). The whole shell is ~2,860 lines of C++17, compiles down to a ~344K stripped binary, and starts faster than bash.
 
 ## Install
 
-Requires Lua 5.4 development headers (`liblua5.4-dev` on Debian/Ubuntu,
-`lua5.4` on Arch) discoverable via `pkg-config`. Line editing
-(`linenoise.c`/`.h`, vendored, BSD-licensed) has no external dependency.
+### Prebuilt binary
 
-```
+Grab `wisp-linux-x86_64.tar.gz` from the [Releases](https://github.com/hinikaa/wisp/releases) page, extract it, and put `wisp` somewhere on your `$PATH`.
+
+### Build from source
+
+You'll need a C++17 compiler and Lua 5.4 development headers discoverable via `pkg-config`:
+
+- **Debian / Ubuntu:** `sudo apt install liblua5.4-dev`
+- **Arch:** `sudo pacman -S lua54`
+
+Then build and install:
+
+```sh
 make
-make test              # unit + end-to-end + pty tests
-sudo make install      # /usr/local/bin/wisp, PREFIX= to change
+make test              # unit tests + shell tests + interactive PTY tests
+sudo make install      # installs to /usr/local/bin/wisp (override with PREFIX=)
 ```
 
-Or use the self-contained bootstrap script, which needs no `make`:
+If you don't want to use `make`, there's a small Lua build script included:
 
-```
-lua bootstrap.lua build   # compile wisp
-lua bootstrap.lua test    # run all tests
-lua bootstrap.lua clean   # remove build artifacts
-```
-
-To use wisp as your login shell, add the installed path to `/etc/shells`
-and `chsh -s /usr/local/bin/wisp`.
-
-### Tests
-
-`make test` runs three layers:
-
-- four unit binaries over the pure pieces (lexer, parser, segment grouping,
-  the Lua value boundary)
-- `test_shell.sh`, which feeds lines to the real `./wisp` and diffs what
-  comes back
-- `test_interactive.py`, which drives it through an actual pty
-
-Each layer exists because the one above it missed something real. Unit tests
-over a pure lexer pass happily while the shell they belong to drops every
-builtin's output on the floor. And piping into stdin means `isatty()` is
-false, so the entire job-control path never runs -- both of the
-session-killing bugs found so far lived exactly there, invisible to
-everything but a pty.
-
-## Usage
-
-```
-./wisp
+```sh
+lua bootstrap.lua build
+lua bootstrap.lua test
+lua bootstrap.lua clean
 ```
 
-Or run a one-off command line, the way anything spawning a `$SHELL` does:
+To use wisp as your login shell, add `/usr/local/bin/wisp` to `/etc/shells` and run:
 
-```
-./wisp -c 'ls | wc -l'
-./wisp -c 'make && ./wisp -c "echo built"'
-```
-
-`-c` is shell syntax. A leading `:` makes it Lua, exactly as at the prompt,
-and `-e` takes Lua directly:
-
-```
-./wisp -c ':print(42 * 10)'
-./wisp -e 'for i=1,5 do print(i) end'
+```sh
+chsh -s /usr/local/bin/wisp
 ```
 
-### Script mode
+## Quick tour
 
-Run a Lua file directly:
+### Config and structured pipelines
 
-```
-./wisp -f script.lua
-```
-
-Or use a shebang:
-
-```lua
-#!/usr/bin/env wisp
-print("hello from script")
-```
-
-### Shell mode
-
-Bare lines are ordinary shell syntax: `ls -la`, `cd ..`, `cat file | grep foo`,
-`make && ./wisp`, `sleep 30 &`, redirects (`<` `>` `>>` `2>` `2>&1` `&>`),
-`Ctrl-Z`/`fg`/`bg` for job control.
-
-Quoting works the way the muscle memory expects: `'single'` is raw,
-`"double"` still expands `$VAR`, a backslash escapes the next character
-(`touch my\ file`, `echo \$PATH`), an unquoted `#` starts a comment, and
-adjacent chunks are one argument -- `--format='%h %s'` reaches the program
-whole rather than split at the quote.
-
-Environment assignments work in both positions:
-
-```
-wisp> FOO=bar             # sets it for the session
-wisp> FOO=bar env | grep FOO   # sets it for that command only
-```
-
-**Globbing** is supported for bare (unquoted) words:
-
-```
-wisp> ls *.cpp
-executor.cpp  lexer.cpp  lua_env.cpp  main.cpp  parser.cpp
-wisp> echo /tmp/report_*.csv
-/tmp/report_2024.csv  /tmp/report_2025.csv  /tmp/report_2026.csv
-```
-
-Glob patterns that match nothing are kept as-is (same as bash). Single quotes,
-double quotes, and backslash escapes suppress globbing (`echo "*.cpp"`,
-`echo \*.cpp`).
-
-A line starting with `:` is Lua instead -- `:1 + 1` prints `2`; multi-line
-input (a `for` loop, a multi-statement function) prompts `>>> ` for
-continuation lines until the chunk compiles, the same trick `lua.c`'s own
-standalone interpreter uses.
-
-### Config: `~/.config/wisp/init.lua`
-
-`example-init.lua` in this repo is a working starting point -- copy it there
-and edit.
+Copy [`example-init.lua`](example-init.lua) to `~/.config/wisp/init.lua` (or `$XDG_CONFIG_HOME/wisp/init.lua`) to get started. There's no special alias or config syntax; it's just Lua:
 
 ```lua
 function prompt()
   return "wisp> "
 end
 
--- Any global function is directly callable as a command.
-function hello(input, name)
+-- Plain command: first arg is pipeline input (nil if none), rest are shell args
+function greet(_, name)
   print("hello, " .. (name or "world"))
 end
 
--- A "native" pipeline stage: receives the previous stage's value as `input`
--- (nil if there wasn't one), returns a value for the next stage.
-function nums(input)
-  return { {n = 3}, {n = 1}, {n = 2} }
+-- Aliases are just functions calling sh()
+function ll()
+  sh("ls -la")
+end
+
+-- Pipeline stages pass real Lua tables in-process
+function nums()
+  return { { n = 3 }, { n = 1 }, { n = 2 } }
 end
 
 function sorted(input)
@@ -170,8 +96,10 @@ function sorted(input)
 end
 ```
 
-```
-wisp> hello world
+At the prompt:
+
+```text
+wisp> greet world
 hello, world
 wisp> nums | sorted
 n=1
@@ -181,338 +109,166 @@ wisp> nums | sorted | wc -l
 3
 ```
 
-The last line above crosses from a native (in-process) run into a real
-external process (`wc`): wisp renders the table to text right at that
-boundary, the same row-per-line format shown for terminal display.
+In `nums | sorted`, neither stage forks; `sorted` gets the exact Lua table returned by `nums`. Adding `| wc -l` renders the rows to text only when handing off to `wc`.
 
-`command NAME` bypasses a same-named Lua function to reach the real
-`$PATH` executable (e.g. if you've defined `function ls() ... end`,
-`command ls` still runs `/usr/bin/ls`).
+If a Lua function shadows a real binary (for example you define `function ls()`), `command ls` bypasses the Lua function and runs `/usr/bin/ls`.
 
-### Tab completion
+### Everyday shell usage
 
-Tab completion works for:
+Regular shell commands work the way you expect:
 
-- **Commands** (first word): builtins (`cd`, `exit`, `export`, `command`,
-  `jobs`, `fg`, `bg`, `kill`, `source`, `echo`, `disown`, `wait`, `pwd`,
-  `type`, `pkg`), Lua global functions, and `$PATH` executables (filtered to
-  `+x` only). The `$PATH` scan is cached and shared with `type` and the
-  command-not-found hint, so it costs one walk per session, not one per Tab
-- **Filenames** (later words, including `~/...`): with `/` suffix for
-  directories, hidden files shown only when prefix starts with `.`
-- **Lua mode** (`:prefix` or `:table.prefix`): Lua globals and nested table
-  keys when input starts with `:`
-
-**Ctrl-R** is reverse incremental history search, as everywhere else: type to
-narrow, Ctrl-R again for the next older match, Enter to run it, Esc to edit
-it first, Ctrl-C to go back to what you were typing.
-
-### Error messages
-
-wisp gives context-aware error messages:
-
-```
-wisp: grpe: command not found (did you mean 'grep'?)
-wisp: expected a filename after redirect, got |
-wisp: unexpected end of input after redirect
-wisp: lua: [string "1+"]:1: unexpected symbol near '1'
-```
-
-Command-not-found suggestions score every `$PATH` executable by edit distance
-(threshold: 3), counting a swapped pair of adjacent characters as one edit
-rather than two -- which is what a mistyped command usually is, so `grpe`
-reaches `grep` instead of tying with a dozen unrelated names.
-
-## Example
-
-```
+```sh
 wisp> echo hi > /tmp/f && cat /tmp/f
 hi
-wisp> ls | grep wisp
-wisp
+wisp> ls *.cpp
+executor.cpp  lexer.cpp  lua_env.cpp  main.cpp  parser.cpp
+wisp> echo {a,b}{1..3}
+a1 a2 a3 b1 b2 b3
+wisp> FOO=bar env | grep FOO
+FOO=bar
 wisp> sleep 30 &
 [1] 84213
 wisp> jobs
 [1]  Running    sleep 30
 ```
 
-### Package Management
+Supported shell syntax:
+- **Pipelines & chaining:** `|`, `&&`, `||`, `;`, backgrounding with `&`
+- **Redirects:** `<`, `>`, `>>`, `2>`, `2>&1`, `&>` (works on builtins too, like `echo hi > f`)
+- **Job control:** `Ctrl-Z`, `jobs` (`-l`), `fg`, `bg`, `kill %N` (supports `-9`, `-KILL`, etc.), `disown %N`, `wait`
+- **Expansions:** `$VAR`, `${VAR:-default}`, `$?`, `$(cmd)` (including pipes and nesting), globs (`*.cpp`, `src/**/*.h`), brace expansion (`{a,b,c}`, `{1..10}`, `{a..e}`)
+- **Quoting & comments:** `'raw'`, `"expands $VAR"`, `\escapes`, `# comments`, and concatenated words like `--format='%h %s'`
+- **Env vars:** `FOO=bar` sets it for the session; `FOO=bar cmd` scopes it to a single command (including builtins and Lua functions)
 
-`pkg` is a front end to [LuaRocks](https://luarocks.org), not a package
-manager of its own -- wisp has no business reinventing one, and Lua already
-has the ecosystem. It requires `luarocks` on `$PATH` and always installs
-`--local`.
+### Interactive Lua mode (`:`)
 
-```
-wisp> pkg search json          # luarocks search
-wisp> pkg install luasocket    # luarocks install --local
-wisp> pkg list                 # luarocks list
-wisp> pkg info luasocket       # luarocks show
-wisp> pkg update luasocket     # reinstall at the latest version
-wisp> pkg remove luasocket     # luarocks remove
-```
-
-Installed rocks are available via `require()` immediately: wisp puts the
-local rock tree on both `package.path` and `package.cpath` at startup, so
-pure-Lua and C rocks both load.
+Prefix any line with `:` to evaluate Lua directly. Expressions print their result automatically, and incomplete blocks prompt with `>>> ` for more lines:
 
 ```lua
-local socket = require("socket")
-print(socket._VERSION)
+wisp> :1 + 1
+2
+wisp> :for i = 1, 3 do
+>>>   print("step " .. i)
+>>> end
+step 1
+step 2
+step 3
 ```
+
+### Tab completion, history, and typo hints
+
+- **Tab completion** completes builtins, Lua global functions, and `$PATH` executables for the first word, filenames (including `~/...`, with `/` on directories) for arguments, and Lua globals / nested table keys when typing `:prefix` or `:table.prefix`.
+- **`Ctrl-R`** does reverse incremental search through `~/.wisp_history` (`Ctrl-R` for older matches, `Enter` to run, `Esc` to edit, `Ctrl-C` to cancel).
+- **Typo suggestions** check `$PATH` executables by edit distance (treating swapped adjacent characters as a single edit):
+  ```text
+  wisp: grpe: command not found (did you mean 'grep'?)
+  ```
+
+### Builtins
+
+| Builtin | What it does |
+|---|---|
+| `cd [dir \| -]` | Change directory (`cd -` switches back, keeps `$PWD` and `$OLDPWD` updated) |
+| `pwd` | Print working directory |
+| `echo [-n] [-e]` | Print arguments (`-n` no newline, `-e` escapes like `\n`/`\t`/`\\`, `-ne` combined) |
+| `export VAR=val` | Export environment variables |
+| `source file.lua` | Load and run a Lua file in the current session |
+| `type cmd` | Show whether `cmd` is a builtin, Lua function, or `$PATH` executable |
+| `command cmd` | Run a `$PATH` executable directly, skipping same-named Lua functions |
+| `jobs`, `fg`, `bg`, `kill`, `disown`, `wait` | Standard background job management |
+| `pkg` | Thin wrapper around LuaRocks (see below) |
+| `exit [code]` | Exit the shell |
+
+### Packages (`pkg`)
+
+Instead of inventing another package manager, `pkg` wraps [LuaRocks](https://luarocks.org) and installs into your local rock tree (`--local`). You just need `luarocks` on `$PATH`:
+
+```sh
+wisp> pkg search json
+wisp> pkg install luasocket
+wisp> pkg list
+wisp> pkg info luasocket
+wisp> pkg update luasocket
+wisp> pkg remove luasocket
+```
+
+wisp adds your local rock tree to `package.path` and `package.cpath` at startup, so installed pure-Lua and C rocks work with `require()` right away:
+
+```lua
+wisp> :local socket = require("socket"); print(socket._VERSION)
+```
+
+### CLI flags & scripts
+
+```sh
+wisp                            # interactive shell
+wisp -c 'ls | wc -l'            # run a shell command (for $SHELL, git aliases, etc.)
+wisp -c ':print(42 * 10)'       # leading ':' switches -c to Lua
+wisp -e 'for i=1,5 do print(i) end'  # run a Lua chunk directly
+wisp -f script.lua              # run a Lua script file
+wisp --version                  # print version
+```
+
+Shebang scripts work too:
+
+```lua
+#!/usr/bin/env wisp
+print("hello from script")
+```
+
+## What wisp doesn't do
+
+Some of this is intentional, some just isn't built yet:
+
+- **No bash control-flow grammar** (`if`/`for`/`while`/`case`). Control flow belongs in Lua, so there's no plan to add shell scripting syntax.
+- **No word splitting on variable expansion.** If `$VAR` holds `a b`, it stays one argument (closer to fish than POSIX).
+- **No bash arrays (`arr=(1 2 3)`), `[[ ]]`, heredocs (`<<EOF`), `$1`..`$9`, or `${!prefix*}` / `${VAR+alt}`.**
+- **No sandboxing of `init.lua`.** It has full Lua stdlib access, same trust model as `.bashrc`.
+- **Backgrounding an all-native Lua pipeline (`nums | sorted &`)** runs in the foreground with a notice, since there's no child process to background.
 
 ## Benchmarks
 
-Measured on x86-64 Linux, g++ 16, Lua 5.4, bash 5.3, zsh 5.9, dash 0.5.
+Measured on x86-64 Linux with `g++ 16`, Lua 5.4, bash 5.3, zsh 5.9, and dash 0.5 (`-c ''` with rc files disabled for bash/zsh):
 
-| | wisp | bash 5.3 | zsh | dash | lua 5.4 |
-|---|---|---|---|---|---|
-| Binary, stripped | 344K | 1.1M | ~900K | **~120K** | 318K |
+| Metric | wisp | bash 5.3 | zsh 5.9 | dash 0.5 | lua 5.4 |
+|---|---:|---:|---:|---:|---:|
+| Stripped binary | 344K | 1.1M | ~900K | **~120K** | 318K |
 | Source lines | **2,864** | ~500K | ~250K | ~20K | ~25K |
-| Startup, best of 40 | 0.55ms | 2.1ms | 1.2ms | 1.2ms | 1.5ms |
-| Throughput, 500 runs | 1.07ms | 1.66ms | -- | -- | -- |
-| Peak RSS | **2.9MB** | 5.7MB | -- | -- | 2.4MB |
+| Startup (best of 40) | 0.55ms | 2.1ms | 1.2ms | 1.2ms | 1.5ms |
+| Throughput (500 runs avg) | 1.07ms | 1.66ms | — | — | — |
+| Peak RSS | **2.9MB** | 5.7MB | — | — | 2.4MB |
 
-Startup and throughput are `-c ''` (bash and zsh with rc files disabled),
-on a machine that was not idle -- treat the absolute milliseconds as noise
-and the ordering as the result.
+A couple caveats: the machine wasn't completely idle, so treat the relative ordering as more meaningful than exact sub-millisecond numbers. By default the `Makefile` links `libstdc++` and `libgcc` statically, which adds ~200K to the binary size in exchange for avoiding shared-library relocation on every shell spawn. If you prefer a smaller binary, `make STATIC_CXX= LTO=` drops it to ~180K with startup roughly on par with bash.
 
-wisp starts and runs faster than bash while using half the memory and a
-third of the binary, and stays behind dash and zsh, which is the honest
-place to be: it pays for `luaL_openlibs` up front, and that is exactly what
-buys a real language at the prompt. If sub-millisecond startup is the
-requirement, dash is right there and wisp is not trying to beat it.
+For structured pipelines, running `nums | sorted | count` over 10,000 records 100 times takes ~430ms, matching `seq 10000 | sort -n | wc -l` through coreutils while keeping records directly indexable as Lua tables.
 
-Most of wisp's margin over bash comes from linking libstdc++ and libgcc
-statically -- a shell is spawned constantly, and not mapping and relocating
-a 2MB shared object every time is worth more than the ~200K it adds to the
-binary. `make STATIC_CXX= LTO=` opts out and gives a ~180K binary at bash's
-startup speed.
+## How it compares
 
-**Pipelines.** Values crossing between native (in-process) stages stay
-inside the Lua VM for the whole run and are converted to a C++
-representation only at the two ends -- once on the way in from an external
-process, once on the way out. A `nums | sorted | count` pipeline over
-10,000 records, 100 times, runs in ~430ms, against ~430ms for the same
-shape as `seq 10000 | sort -n | wc -l` through coreutils. Parity with
-optimized C for a Lua `table.sort` is the honest claim here; the win is
-that the records arrive as tables you can index, not as text you have to
-re-parse at every stage.
-
-## Comparison with other shells
-
-Not everyone needs bash. Here's where wisp sits relative to the alternatives
-people actually use.
-
-| Feature | wisp v3 | bash/zsh | dash/busybox sh | fish | nushell/elvish | powershell |
+| Feature | wisp | bash / zsh | dash | fish | nushell | PowerShell |
 |---|---|---|---|---|---|---|
-| Interactive REPL | yes | yes | no | yes | yes | yes |
-| Reverse history search (Ctrl-R) | yes | yes | no | yes | yes | yes |
-| Job control (fg/bg) | yes | yes | no | yes | partial | no |
-| Globbing | yes | yes | yes | yes | yes | no |
-| Tab completion | yes | yes | no | yes | yes | yes |
-| Config via real language | **Lua** | bash DSL | no | fish DSL | own lang | PS scripts |
-| Structured data in pipelines | **Lua tables** | no (text) | no (text) | no (text) | yes | .NET objects |
-| Alias via functions | **auto** | manual | no | functions | functions | functions |
-| Script execution | `-c`/`-e`/`-f` | full | full | full | full | full |
-| Shebang support | yes | yes | yes | yes | yes | no |
-| `$?` / `$(cmd)` | yes | yes | yes | `$status` | `$env:` | `$LASTEXITCODE` |
-| `${VAR:-default}` | yes | yes | yes | yes | yes | no |
-| Brace expansion | yes | yes | no | yes | yes | no |
-| External command not-found | **Levenshtein hint** | no | no | no | no | no |
-| Binary size | **344K** | 1.1M | ~120K | ~1M | ~15M | ~200M+ |
-| Source lines | **2,864** | ~500K | ~20K | ~250K | ~100K | millions |
+| Interactive REPL & Ctrl-R | yes | yes | no | yes | yes | yes |
+| Job control (`fg`/`bg`) | yes | yes | no | yes | partial | no |
+| Globs & brace expansion | yes | yes | globs | yes | globs | no |
+| Config language | **Lua 5.4** | shell DSL | none | fish DSL | Nu | PowerShell |
+| Structured pipelines | **Lua tables** | text | text | text | tables | .NET objects |
+| POSIX-style interactive syntax | mostly | yes | yes | no | no | no |
+| Binary size | **344K** | 1.1M / 900K | ~120K | ~1M | ~15M | 200M+ |
 
-### What wisp v3 can do
+## Under the hood
 
-- Run any shell command: `ls`, `grep -r src/`, `make && make install`
-- Be your login shell: `-c` takes shell syntax, so anything that spawns
-  `$SHELL` (git aliases, `xdg-open`, `system()`, your terminal emulator)
-  works
-- Redirects: `<`, `>`, `>>`, `2>`, `2>&1`, `&>` -- on builtins too, so
-  `echo hi > f` and `jobs 2>/dev/null` behave
-- Background jobs: `sleep 30 &` then `jobs`, `fg %1`, `bg %1`
-- Kill background jobs: `kill %1`, `kill -9 %1`, `kill -KILL %1`
-- Disown jobs: `disown %1` (removes from job table, survives shell exit)
-- Wait for jobs: `wait %1` or `wait` (all background jobs)
-- `$?`, `$(cmd)`, `$VAR`, `${VAR:-default}` expansion -- including
-  `$(cmd | with | pipes)` and nested `$(echo $(date))`
-- Environment assignments: `FOO=bar` for the session, `FOO=bar cmd` for one
-  command (scoped for builtins and Lua functions too)
-- Brace expansion: `{a,b,c}`, `{x,y}{1,2}`, ranges `{1..10}` and `{a..e}`
-- Glob patterns: `*.cpp`, `src/**/*.h`
-- Backslash escapes and `#` comments
-- Tab completion: commands, filenames (including `~/...`), Lua functions & dotted tables
-- Lua one-liners: `:1 + 1`, `:print("hi")`
-- Lua config: define `prompt()`, aliases, pipeline stages in `init.lua`
-- Structured pipelines: `nums | sorted | wc -l` passes Lua tables between stages
-- One-off commands: `./wisp -c 'ls | wc -l'`, `./wisp -e 'return {1, 2, 3}'`
-- Script execution: `./wisp -f script.lua` or shebang `#!/usr/bin/env wisp`
-- `cd -` to go to previous directory
-- `pwd` to print working directory
-- `source file.lua` to load Lua files at runtime
-- `type cmd` to check if command is builtin, function, or PATH executable
-- `echo -n` (no newline), `echo -e` (escape sequences: `\n`, `\t`, `\\`), and combined flags (`echo -ne`)
-- `pkg install|remove|list|search|info|update` on top of LuaRocks
-- Error hints: `wisp: grpe: command not found (did you mean 'grep'?)`
+If you're curious how the codebase is put together, it's five C++ files (`main.cpp`, `lexer.cpp`, `parser.cpp`, `executor.cpp`, `lua_env.cpp`) plus a few headers and vendored `linenoise.c`:
 
-### What wisp v3 can't do (yet)
+- **Per-character quote masks:** The lexer tracks quoting per character (`0` bare, `1` single-quoted/escaped, `2` double-quoted) rather than per word. That's how `--format='%h %s'` stays a single argument, `\$HOME` stays literal, and `"$HOME"` expands variables without triggering globbing or brace expansion.
+- **Zero-copy native pipeline runs:** Consecutive Lua stages pass values directly on the Lua stack and only convert to/from C++ when entering or leaving an external process.
+- **Builtin pipelines without deadlocks:** When a builtin feeds a downstream command, wisp captures its output to a temporary file rather than an OS pipe so outputs over 64KB can't deadlock before the reader starts.
+- **Interrupting Lua with `Ctrl-C`:** Long-running in-process Lua stages install a `SIGINT` + `lua_sethook` handler (the same trick standalone `lua.c` uses) so `Ctrl-C` stops the script without killing the shell. (A long-running pure-C++ builtin without Lua calls isn't interruptible this way yet.)
+- **Cached `$PATH` index:** Tab completion, `type`, and command-not-found hints share one cached scan of `$PATH` that invalidates automatically if `PATH` changes.
+- **Three-layer test suite:** `make test` runs four C++ unit test binaries (lexer, parser, executor, Lua boundary), an end-to-end script (`test_shell.sh`), and a Python PTY harness (`test_interactive.py`) that exercises real terminal job control.
 
-- No array syntax: `arr=(1 2 3)` doesn't exist
-- No `[[ ]]` double-bracket tests
-- No `${!prefix*}` or `${VAR+alternative}` expansions
-- No heredocs (`<<EOF`), no `$1`..`$9` positional parameters
-- No word splitting on expansion results: `$VAR` holding `a b` is one
-  argument, not two. Closer to fish than to POSIX, and deliberate
-- Control flow is Lua's job -- there is no `if`/`while`/`for` shell grammar,
-  and there is not going to be one
+*(Full disclosure: I used AI to help write the C++ parts since C++ isn't my strongest language, while steering the design, testing, and debugging myself.)*
 
-### What other shells can't do
+## License & credits
 
-- **bash/zsh/fish/dash**: No structured data between pipeline stages. Every
-  stage is text in, text out. A `grep | awk | sort` pipeline parses and
-  re-serializes strings at every fork. wisp passes Lua tables directly --
-  zero serialization between native stages.
-- **bash/zsh/fish**: Config is a bespoke DSL with decades of edge cases.
-  wisp's config is Lua -- closures, tables, loops, no separate grammar.
-- **dash/busybox sh**: No tab completion, no job control, no interactive use
-  case. Designed for scripts, not shells.
-- **fish**: Different syntax from POSIX. Can't run bash scripts. wisp runs
-  standard shell commands alongside Lua.
-- **nushell/elvish**: Structured data, yes, but their own ecosystems. wisp
-  uses Lua -- the most embedded scripting language on the planet, with
-  existing libraries, docs, and muscle memory.
-- **powershell**: Object pipelines, but Windows-first, massive runtime, no
-  POSIX compatibility. wisp is 344K and runs on any Linux box.
+MIT License — see [`LICENSE`](LICENSE).
 
-## "But it's just AI slop"
-
-No.
-
-- **~2,860 lines of C++17**, not a framework. No React, no "hello world" boilerplate,
-  no dependency tree. `g++ -std=c++17` and a Lua pkg-config flag. That's it.
-- **Lexer, parser, executor, Lua embedder** -- hand-written, not generated.
-  The parser is a recursive descent with actual error recovery (`<eof>`
-  continuation, Levenshtein suggestions), not a grammar dump.
-- **Structured pipeline data** is a real design choice, not a ChatGPT prompt.
-  Passing Lua tables between stages means zero fork/serialize overhead for
-  native runs -- a deliberate tradeoff against the "everything is bytes"
-  model every other shell uses.
-- **344K binary** after strip, and it starts faster than bash. Five C++
-  files and a Makefile, not a "vibe-coded" project with 47 config files and a CI
-  pipeline longer than the source.
-- ** linenoise.c** is vendored (BSD-2-Clause, Salvatore Sanfilippo).
-  The shell's line editor is the same one Redis uses. Not a "AI wrapper
-  around readline."
-- **The Lua embedding is real.** `luaL_loadstring`, `lua_pcall`,
-  `lua_sethook` for Ctrl-C, `lua_setglobal` for `sh()`. This is not
-  "calling Lua from a subprocess" -- it's an actual in-process Lua VM
-  with proper error handling and stack management.
-
-If someone calls this "slop," ask them: slop compared to what? A shell
-written in Rust with 847 dependencies and a Cargo.lock longer than wisp's
-entire source? A "minimal shell" that's actually a Python script with
-`subprocess.run`? A bash alias collection marketed as a "framework"?
-
-wisp does one thing: it's a shell that uses Lua for config and structured
-data in pipelines. It does it in about 2,860 lines, with an end-to-end test
-suite that runs the real binary. That's not slop. That's focus.
-
-**Full disclosure:** I had trouble with C++ and used AI for assistance.
-That's not the same as "AI wrote this." I made the design decisions --
-Lua tables in pipelines, the parser structure, the job control model.
-The code went through review, testing, and real debugging. AI helped me
-write C++ I couldn't write alone. That's a tool, not a ghostwriter.
-
-## Notes
-
-- **Globbing and brace expansion apply only to bare unquoted characters.**
-  Single quotes, double quotes, and backslash escapes suppress both. Patterns
-  matching nothing are kept as-is (bash behavior).
-- **Quoting is tracked per character, not per word.** The lexer carries a
-  3-state mask (`0` bare, `1` single-quoted/escaped, `2` double-quoted) alongside
-  each word, which is why `--format='%h %s'` stays one argument, `\$HOME`
-  survives expansion, and `"$HOME"` expands variables while keeping glob and
-  brace characters literal.
-- **A native run's value never leaves the Lua VM.** Consecutive
-  function/builtin stages chain on the Lua stack; the C++ `LuaValue`
-  representation is built once on the way in from an external process and
-  once on the way out to one. Converting between stages would deep-copy
-  every record twice per stage, which would defeat the point.
-- **Structured-pipe rendering is row-per-line `key=value`, not
-  column-aligned.** A real width-scanning aligned-table renderer needs a
-  two-pass width scan and has to reconcile rows with heterogeneous keys
-  (which Lua tables make trivially possible) for a mostly cosmetic win.
-  Upgrade path exists if it's ever worth it.
-- **No sandboxing of the Lua config.** `init.lua` has full stdlib access,
-  same trust model as `.bashrc` -- it's a file you wrote yourself, not
-  untrusted input.
-- **Backgrounding (`&`) an all-native pipeline** (no external command
-  anywhere in it) is a no-op with a message: there's no forked process to
-  put in the background, so it just runs in the foreground instead.
-- **Ctrl-C during a long-running native (in-process) Lua stage** is caught
-  via the same `lua_sethook`/`SIGINT` technique `lua.c`'s own standalone
-  interpreter uses, scoped to just that stage's execution window. A
-  long-running pure-C++ builtin with no Lua call inside it is not
-  interruptible this way -- an unsolved v1 edge case, not silently papered
-  over.
-- **`$?`, `$(cmd)`, `$VAR`, and `${VAR:-default}` are supported.** Command
-  substitution runs the inner command line in a forked child exactly like a
-  subshell would, and the tokenizer carries `$( ... )` through whole, so
-  pipes, spaces and nesting inside it belong to the inner line. A `)` inside
-  quotes inside a substitution (`$(echo ")")`) is past what a
-  non-recursive scan can see.
-- **`-c` runs shell syntax, `-e` runs Lua.** `-c` is what `system()`, git
-  aliases and terminal emulators call, so it has to be the shell one; a
-  leading `:` still switches a `-c` argument to Lua, exactly like the prompt.
-  Use `-f` for script files.
-- **Builtins participate in pipelines and redirects properly.** `echo hi |
-  wc -c` pipes, `echo hi > f` writes the file. A builtin feeding a later
-  stage has its output captured into a temp file rather than an OS pipe --
-  nothing is draining the far end yet, and a pipe would deadlock past 64K.
-- **`kill %N` sends SIGTERM by default** (supports numeric `-9` and symbolic `-KILL` / `-HUP` signals) to background job process groups. `jobs -l`
-  shows PIDs. Standard job control, nothing exotic.
-- **`cd -`** goes to the previous directory (like bash). Tracks the last
-  `cd` destination automatically.
-- **`source file.lua`** loads and executes a Lua file at runtime. Useful
-  for loading function libraries or runtime config.
-- **`echo -n`** suppresses trailing newline. **`echo -e`** processes escape
-  sequences (`\n`, `\t`, `\\`), and combined flags like **`echo -ne`** work.
-  Plain `echo` with no flags works as expected.
-- **`disown %N`** removes a job from the job table. The process keeps
-  running but the shell won't send SIGHUP on exit.
-- **`wait %N`** blocks until the specified background job finishes. `wait`
-  with no arguments waits for all background jobs.
-- **`pwd`** prints the current working directory.
-- **`type cmd`** shows whether a command is a shell builtin, a Lua function,
-  or a PATH executable (and where).
-- **`pkg` requires LuaRocks** and always installs `--local`. There is no
-  fallback mode: a package manager that can't fetch packages isn't one.
-  Rocks land on `package.path` and `package.cpath`, so `require()` finds
-  them straight away. Arguments are passed to `luarocks` via `execvp`, not
-  through `/bin/sh`.
-- **Brace expansion** works: `{a,b,c}` expands to separate words,
-  `{x,y}{1,2}` to `x1 x2 y1 y2`, `{1..10}` and `{a..e}` are ranges. Nested
-  braces supported. A group with neither a comma nor a range is *not* an
-  expansion and is left exactly as written, so `git show HEAD@{1}` and
-  `awk {print}` survive unquoted.
-- **`2>&1`** redirects stderr to stdout, **`&>file`** sends both to a file.
-- **Ctrl-C at the prompt abandons the line**, sets `$?` to 130, and gives
-  you a new prompt. It does not end the session -- linenoise reports it the
-  same way it reports EOF, which is a trap worth knowing about if you embed
-  it yourself.
-- **`$PWD` and `$OLDPWD` track `cd`**, so a `prompt()` reading them, and any
-  child process, sees the truth.
-- **`kill %N` on a stopped job sends SIGCONT after the signal.** A suspended
-  process never runs long enough to act on a SIGTERM otherwise.
-
-## License
-
-MIT, see `LICENSE`. Vendored `linenoise.c`/`linenoise.h` are BSD-2-Clause,
-see `LINENOISE_LICENSE`, Copyright (c) Salvatore Sanfilippo and Pieter
-Noordhuis.
-
-`linenoise.c` carries one local change: reverse incremental search (Ctrl-R),
-which upstream does not have. It is marked in the source and confined to a
-single function plus one `switch` case, so it stays easy to spot and to
-re-apply if the vendored copy is ever updated.
+Line editing uses vendored [`linenoise`](https://github.com/antirez/linenoise) (BSD-2-Clause, see [`LINENOISE_LICENSE`](LINENOISE_LICENSE)), copyright Salvatore Sanfilippo and Pieter Noordhuis, with one small local patch adding `Ctrl-R` reverse incremental history search.

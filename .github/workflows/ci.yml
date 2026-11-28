@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,4 +15,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y liblua5.4-dev
 
       - name: Run test suite
+        run: make test
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.4
+        run: brew install lua@5.4 pkg-config
+
+      - name: Run test suite
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/opt/lua@5.4/lib/pkgconfig:/usr/local/opt/lua@5.4/lib/pkgconfig
         run: make test

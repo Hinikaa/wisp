@@ -112,6 +112,36 @@ static void test_pretty_table_and_prelude() {
     assert(lua_tointeger(L, -1) == 42);
     lua_pop(L, 1);
 
+    // from_json on multiline line-array input (as piped from external commands)
+    LuaValue jlines = LuaValue::from_lines({"[", "  {\"name\": \"a\\nb\", \"n\": 12},", "  {\"name\": \"\\u0041\", \"n\": 3}", "]"});
+    LuaValue parsed = lua_env::call_lua_function(L, "from_json", {}, jlines, true);
+    assert(parsed.type == LuaValue::Type::Array && parsed.arr.size() == 2);
+    LuaValue sorted_j = lua_env::call_lua_function(L, "sort_by", {"n"}, parsed, true);
+    assert(sorted_j.arr.size() == 2);
+    LuaValue first_j = lua_env::call_lua_function(L, "take", {"1"}, sorted_j, true);
+    assert(lua_env::render_value(first_j).find("name=A") != std::string::npos);
+
+    // from_csv with quoted comma, escaped quote, and numeric conversion
+    LuaValue clines = LuaValue::from_lines({"name,val", "\"a, \"\"b\"\"\",30", "c,5"});
+    LuaValue csv = lua_env::call_lua_function(L, "from_csv", {}, clines, true);
+    assert(csv.type == LuaValue::Type::Array && csv.arr.size() == 2);
+    LuaValue sorted_c = lua_env::call_lua_function(L, "sort_by", {"val"}, csv, true);
+    assert(lua_env::render_value(sorted_c).find("name=c val=5") == 0);
+
+    // procs returns at least one running process with pid/name/state/mem_kb
+    LuaValue ps = lua_env::call_lua_function(L, "procs", {}, LuaValue::nil(), false);
+    assert(ps.type == LuaValue::Type::Array && !ps.arr.empty());
+    assert(ps.arr[0].type == LuaValue::Type::Table);
+
+    // lua_function_names exposes prelude helpers
+    auto fns = lua_env::lua_function_names(L);
+    bool has_files = false, has_from_json = false;
+    for (auto& n : fns) {
+        if (n == "files") has_files = true;
+        if (n == "from_json") has_from_json = true;
+    }
+    assert(has_files && has_from_json);
+
     lua_env::close(L);
 }
 

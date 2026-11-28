@@ -35,15 +35,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-OS=$(uname -s)
-if [ "$OS" != "Linux" ]; then
-    printf 'install.sh: unsupported OS: %s (Linux only)\n' "$OS" >&2
-    exit 1
-fi
+case "$(uname -s)" in
+    Linux)  PLATFORM="linux" ;;
+    Darwin) PLATFORM="macos" ;;
+    *)
+        printf 'install.sh: unsupported OS: %s\n' "$(uname -s)" >&2
+        exit 1
+        ;;
+esac
 
 case "$(uname -m)" in
     x86_64|amd64)  ARCH="x86_64" ;;
-    aarch64|arm64) ARCH="aarch64" ;;
+    aarch64|arm64) ARCH=$([ "$PLATFORM" = "macos" ] && echo "arm64" || echo "aarch64") ;;
     *)
         printf 'install.sh: unsupported architecture: %s\n' "$(uname -m)" >&2
         exit 1
@@ -59,11 +62,11 @@ if [ -z "$VERSION" ]; then
     fi
 fi
 
-URL="https://github.com/${REPO}/releases/download/${VERSION}/wisp-linux-${ARCH}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/${VERSION}/wisp-${PLATFORM}-${ARCH}.tar.gz"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-printf 'Downloading wisp %s (%s)...\n' "$VERSION" "$ARCH"
+printf 'Downloading wisp %s (%s-%s)...\n' "$VERSION" "$PLATFORM" "$ARCH"
 curl -fsSL "$URL" -o "${TMP}/wisp.tar.gz"
 tar -xzf "${TMP}/wisp.tar.gz" -C "$TMP"
 

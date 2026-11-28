@@ -15,7 +15,7 @@
     </a>
     <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17" />
     <img src="https://img.shields.io/badge/Lua-5.4-000080" alt="Lua 5.4" />
-    <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux" />
+    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="Linux and macOS" />
   </p>
 </div>
 
@@ -23,21 +23,27 @@
 
 ## What is wisp?
 
-wisp is a daily-drivable Linux shell with proper job control, tab completion, inline history autosuggestions, globbing, and reverse history search, except Lua 5.4 replaces bash scripting and config syntax.
+wisp is a daily-drivable Linux & macOS shell with proper job control, tab completion, inline history autosuggestions, globbing, and reverse history search, except Lua 5.4 replaces bash scripting and config syntax.
 
 Any global function you put in `~/.config/wisp/init.lua` automatically becomes a shell command. When you pipe one Lua function into another, wisp runs them in-process and passes the actual Lua table straight to the next stage instead of turning everything into text and parsing it back out. In a terminal, lists of records render as aligned tables; as soon as you pipe into a normal binary on `$PATH` (like `grep` or `wc`) or redirect to a file, wisp converts them to plain `key=value` lines automatically.
 
-Everything stays dynamically typed with normal Lua values (`string`, `number`, `table`, `boolean`, `nil`). The whole shell is ~3,350 lines of C++17, compiles down to a ~396K stripped binary, and starts faster than bash.
+Everything stays dynamically typed with normal Lua values (`string`, `number`, `table`, `boolean`, `nil`). The whole shell is ~3,670 lines of C++17, compiles down to a ~420K stripped binary, and starts faster than bash.
 
 ## Install
 
-### Quick install (Linux x86_64 / aarch64)
+### Quick install (Linux x86_64/aarch64 & macOS Apple Silicon)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Hinikaa/wisp/master/install.sh | sh
 ```
 
 Release binaries link Lua 5.4 statically so they run across distros without library version mismatches. You can also download `.deb`, `.rpm`, or `.tar.gz` packages directly from the [Releases](https://github.com/hinikaa/wisp/releases) page.
+
+### Homebrew (macOS & Linux)
+
+```sh
+brew install hinikaa/tap/wisp
+```
 
 ### Arch Linux (AUR)
 
@@ -60,6 +66,7 @@ You'll need a C++17 compiler and Lua 5.4 development headers discoverable via `p
 
 - **Debian / Ubuntu:** `sudo apt install liblua5.4-dev`
 - **Arch:** `sudo pacman -S lua54`
+- **macOS (Homebrew):** `brew install lua@5.4 pkg-config`
 
 Then build and install:
 
@@ -87,23 +94,27 @@ chsh -s /usr/local/bin/wisp
 
 ### Structured pipelines out of the box
 
-wisp ships with a small built-in prelude (`files`, `where`, `sort_by`, `cols`, `take`, `skip`, `count`, `lines`, `to_json`), so structured pipelines work right away with zero config:
+wisp ships with a small built-in prelude (`files`, `procs`, `where`, `sort_by`, `cols`, `take`, `skip`, `count`, `lines`, `from_json`, `to_json`, `from_csv`), so structured pipelines work right away with zero config:
 
 ```text
-wisp> files | where type == file | sort_by size desc | take 4 | cols name size
+wisp> files | where name ~= %.cpp$ | sort_by size desc | take 4 | cols name size
 name           size
 ────────────  ─────
-linenoise.c   86505
-executor.cpp  51728
-lua_env.cpp   24921
-main.cpp      13764
+executor.cpp  52770
+lua_env.cpp   25926
+main.cpp      14378
+lexer.cpp      5836
 
-wisp> files | where name ~= %.cpp$ | count
-5
+wisp> procs | where mem_kb gt 50000 | sort_by mem_kb desc | take 3
+ pid  name    state  mem_kb
+────  ──────  ─────  ──────
+5699  agy     S      543412
+6581  helium  S      458172
 
-wisp> files | where name == main.cpp | cols name type | to_json
-[{"name":"main.cpp","type":"file"}]
+wisp> curl -s https://api.github.com/users/Hinikaa/repos | from_json | sort_by stargazers_count desc | take 3 | cols name stargazers_count
 ```
+
+`where` supports `==`, `!=`, `~=`, and shell-safe comparison operators `gt`, `ge`, `lt`, `le` (so you don't have to quote `>` or `<`). More ready-to-use commands (`top_mem`, `git_log`, `json_get`, `ext_counts`) are in [`examples/recipes.lua`](examples/recipes.lua).
 
 Every stage above runs in-process on the Lua stack with no forks. Adding `| wc -l` or `> out.txt` renders the table to text only at that boundary.
 
@@ -185,9 +196,10 @@ step 3
 - **Tab completion** completes builtins, Lua global functions, and `$PATH` executables in command position (including right after `|`, `&&`, `||`, `;`, and `command`), filenames (including `~/...`, with `/` on directories) for arguments, and Lua globals / nested table keys when typing `:prefix` or `:table.prefix`.
 - **Inline autosuggestions** show the most recent matching history entry as faint gray ghost text while you type — press `Right` (or `Ctrl-F`) at the end of the line to accept it.
 - **`Ctrl-R`** does reverse incremental search through `~/.wisp_history` (`Ctrl-R` for older matches, `Enter` to run, `Esc` to edit, `Ctrl-C` to cancel).
-- **Typo suggestions** check `$PATH` executables by edit distance (treating swapped adjacent characters as a single edit):
+- **Typo suggestions** score builtins, Lua functions, and `$PATH` executables by Damerau-Levenshtein edit distance (adjacent swap = 1 edit) and break ties using your command history:
   ```text
   wisp: grpe: command not found (did you mean 'grep'?)
+  wisp: fiels: command not found (did you mean 'files'?)
   ```
 
 ### Builtins
@@ -260,8 +272,8 @@ Measured on x86-64 Linux with `g++ 16`, Lua 5.4, bash 5.3, zsh 5.9, and dash 0.5
 
 | Metric | wisp | bash 5.3 | zsh 5.9 | dash 0.5 | lua 5.4 |
 |---|---:|---:|---:|---:|---:|
-| Stripped binary | 396K | 1.1M | ~900K | **~120K** | 318K |
-| Source lines | **3,356** | ~500K | ~250K | ~20K | ~25K |
+| Stripped binary | 420K | 1.1M | ~900K | **~120K** | 318K |
+| Source lines | **3,668** | ~500K | ~250K | ~20K | ~25K |
 | Startup (best of 40) | 0.55ms | 2.1ms | 1.2ms | 1.2ms | 1.5ms |
 | Throughput (500 runs avg) | 1.07ms | 1.66ms | — | — | — |
 | Peak RSS | **2.9MB** | 5.7MB | — | — | 2.4MB |
@@ -280,7 +292,7 @@ For structured pipelines, running `nums | sorted | count` over 10,000 records 10
 | Config language | **Lua 5.4** | shell DSL | none | fish DSL | Nu | PowerShell |
 | Structured pipelines | **Lua tables** | text | text | text | tables | .NET objects |
 | POSIX-style interactive syntax | mostly | yes | yes | no | no | no |
-| Binary size | **396K** | 1.1M / 900K | ~120K | ~1M | ~15M | 200M+ |
+| Binary size | **420K** | 1.1M / 900K | ~120K | ~1M | ~15M | 200M+ |
 
 ## Under the hood
 

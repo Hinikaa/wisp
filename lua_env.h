@@ -71,6 +71,8 @@ std::string get_prompt(lua_State* L);
 
 // Builtin > Lua global function > external ($PATH, checked lazily at exec time).
 CmdKind resolve_command(lua_State* L, const std::string& name);
+// Global Lua function names (for tab completion and command-not-found hints).
+std::vector<std::string> lua_function_names(lua_State* L);
 
 // The C++ <-> Lua value boundary. Only crossed at the ends of a native run:
 // in the middle, values stay on the Lua stack (see call_lua_function_top).

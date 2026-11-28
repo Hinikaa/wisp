@@ -21,7 +21,7 @@ extern "C" {
 #include "linenoise.h"
 #include "lua_env.h"
 
-#define WISP_VERSION "3.2.1"
+#define WISP_VERSION "3.3.0"
 
 namespace {
 

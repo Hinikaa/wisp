@@ -6,7 +6,7 @@ on:
       - "v*"
 
 jobs:
-  build:
+  build-linux:
     strategy:
       matrix:
         include:
@@ -41,6 +41,7 @@ jobs:
           ./wisp --version
           ./wisp --help
           ./wisp -c 'files | count'
+          ./wisp -c 'procs | count'
 
       - name: Package tarball, .deb, and .rpm
         env:
@@ -61,8 +62,49 @@ jobs:
           name: wisp-linux-${{ matrix.arch }}
           path: dist/*
 
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.4
+        run: brew install lua@5.4 pkg-config
+
+      - name: Run test suite
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/opt/lua@5.4/lib/pkgconfig:/usr/local/opt/lua@5.4/lib/pkgconfig
+        run: make test
+
+      - name: Build static-Lua release binary
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/opt/lua@5.4/lib/pkgconfig:/usr/local/opt/lua@5.4/lib/pkgconfig
+        run: |
+          make clean
+          LUA_PREFIX=$(brew --prefix lua@5.4)
+          make wisp LUA_CFLAGS="-I${LUA_PREFIX}/include/lua5.4 -I${LUA_PREFIX}/include" LUA_LIBS="${LUA_PREFIX}/lib/liblua5.4.a -lm"
+          strip wisp
+          otool -L wisp
+          ! otool -L wisp | grep -i liblua
+
+      - name: Smoke test
+        run: |
+          ./wisp --version
+          ./wisp -c 'files | count'
+          ./wisp -c 'procs | count'
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          tar -czf "dist/wisp-macos-arm64.tar.gz" wisp README.md LICENSE LINENOISE_LICENSE example-init.lua
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-macos-arm64
+          path: dist/*
+
   release:
-    needs: build
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

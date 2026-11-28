@@ -87,8 +87,8 @@ check 'escaped glob'        '*.zz'        'echo \*.zz'
 check 'double-quoted brace' '{a,b}'       'echo "{a,b}"'
 
 # --- builtins ----------------------------------------------------------------
-check 'cd updates PWD'      '/tmp'      'cd /tmp' 'echo $PWD'
-check 'cd dash'             'ok'        'cd /tmp' 'cd -' 'test "$PWD" = "/tmp" || echo ok'
+check 'cd updates PWD'      '/'         'cd /' 'echo $PWD'
+check 'cd dash'             'ok'        'cd /' 'cd -' 'test "$PWD" = "/" || echo ok'
 check 'type builtin'        'cd is a shell builtin' 'type cd'
 check 'echo -n'             'ab'        'echo -n a' 'echo b'
 check 'echo -e'             'a
@@ -116,12 +116,21 @@ check 'files + where + count' '2'       'files | where name ~= %.zz$ | count'
 check 'sort_by + cols + take' 'name=g2.zz' 'files | where name ~= %.zz$ | sort_by name desc | take 1 | cols name'
 check 'skip + count'        '1'         'files | where name ~= %.zz$ | skip 1 | count'
 check 'to_json'             '[{"name":"g1.zz"}]' 'files | where name == g1.zz | cols name | to_json'
+check 'from_json piped'     '[{"name":"ok","v":7}]' 'printf "[\n{\"name\":\"ok\",\"v\":7}\n]\n" | from_json | to_json'
+check 'from_csv piped'      'name=c'    'printf "name,n\n\"a,b\",20\nc,5\n" | from_csv | sort_by n | take 1 | cols name'
+check 'procs works'         'ok'        'procs | where pid gt 0 | count | grep -qE "^[1-9]" && echo ok'
+check 'void lua fn status 0' 'hi
+ok'                                     ':function say() print("hi") end' 'say && echo ok'
+check 'false lua fn status 1' 'false
+1'                                      ':function nope() return false end' 'nope' 'echo $?'
+check 'typo hint lua fn'    "wisp: fiels: command not found (did you mean 'files'?)" 'fiels'
+check 'typo hint builtin'   "wisp: exi: command not found (did you mean 'exit'?)" 'exi'
 check 'sigpipe survival'    '1
 survived'                               ':function big() local t={} for i=1,5000 do t[i]=tostring(i) end return t end' 'big | head -n 1' 'echo survived'
 
 # --- argv --------------------------------------------------------------------
 printf 'print(arg[1], arg[2])\n' > "$tmp/args.lua"
-check_arg '--version'       'wisp 3.2.1' --version
+check_arg '--version'       'wisp 3.3.0' --version
 check_arg '-c runs shell'   'hi'        -c 'echo hi'
 check_arg '-c chains'       'a
 b'                                      -c 'echo a && echo b'

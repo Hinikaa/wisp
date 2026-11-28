@@ -5,14 +5,14 @@
 
   outputs = { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
       packages = forAllSystems (pkgs: {
         wisp = pkgs.stdenv.mkDerivation {
           pname = "wisp";
-          version = "3.2.1";
+          version = "3.3.0";
           src = self;
 
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -38,7 +38,7 @@
             description = "Small Linux shell with Lua 5.4 embedded for config and structured pipelines";
             homepage = "https://github.com/Hinikaa/wisp";
             license = [ licenses.mit licenses.bsd2 ];
-            platforms = platforms.linux;
+            platforms = platforms.unix;
             mainProgram = "wisp";
           };
         };

@@ -11,6 +11,9 @@
 #include <stdexcept>
 #include <sys/stat.h>
 #include <unordered_map>
+#ifdef __APPLE__
+#include <libproc.h>
+#endif
 
 extern "C" {
 #include <lua.h>
@@ -156,6 +159,107 @@ int l_files(lua_State* L) {
     return 1;
 }
 
+// `procs` -- structured process list returning `{ pid, name, state, mem_kb }`.
+// Reads /proc directly on Linux and libproc on macOS (zero subprocesses).
+int l_procs(lua_State* L) {
+    struct ProcRow {
+        lua_Integer pid;
+        std::string name;
+        std::string state;
+        lua_Integer mem_kb;
+    };
+    std::vector<ProcRow> rows;
+
+#ifdef __linux__
+    if (DIR* d = opendir("/proc")) {
+        while (struct dirent* ent = readdir(d)) {
+            const char* p = ent->d_name;
+            if (*p < '0' || *p > '9') continue;
+            bool all_digits = true;
+            for (const char* q = p; *q; ++q) {
+                if (*q < '0' || *q > '9') { all_digits = false; break; }
+            }
+            if (!all_digits) continue;
+
+            std::string base = std::string("/proc/") + p;
+            std::string name;
+            std::string state = "?";
+            if (FILE* f = std::fopen((base + "/stat").c_str(), "r")) {
+                char buf[1024];
+                size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+                std::fclose(f);
+                buf[n] = '\0';
+                std::string s(buf, n);
+                size_t lp = s.find('(');
+                size_t rp = s.rfind(')');
+                if (lp != std::string::npos && rp != std::string::npos && rp > lp) {
+                    name = s.substr(lp + 1, rp - lp - 1);
+                    if (rp + 2 < s.size()) state.assign(1, s[rp + 2]);
+                }
+            }
+            if (name.empty()) continue;
+
+            lua_Integer rss_kb = 0;
+            if (FILE* f = std::fopen((base + "/status").c_str(), "r")) {
+                char line[256];
+                while (std::fgets(line, sizeof line, f)) {
+                    if (std::strncmp(line, "VmRSS:", 6) == 0) {
+                        rss_kb = std::strtoll(line + 6, nullptr, 10);
+                        break;
+                    }
+                }
+                std::fclose(f);
+            }
+            rows.push_back({std::strtoll(p, nullptr, 10), std::move(name), std::move(state), rss_kb});
+        }
+        closedir(d);
+    }
+#elif defined(__APPLE__)
+    int bytes = proc_listallpids(nullptr, 0);
+    if (bytes > 0) {
+        std::vector<pid_t> pids(static_cast<size_t>(bytes) / sizeof(pid_t) + 32);
+        int count = proc_listallpids(pids.data(), static_cast<int>(pids.size() * sizeof(pid_t)));
+        for (int i = 0; i < count; ++i) {
+            if (pids[i] <= 0) continue;
+            struct proc_taskallinfo info{};
+            if (proc_pidinfo(pids[i], PROC_PIDTASKALLINFO, 0, &info, sizeof info) <= 0) continue;
+            const char* st = "?";
+            switch (info.pbsd.pbi_status) {
+                case 2: st = "R"; break; // SRUN
+                case 3: st = "S"; break; // SSLEEP
+                case 4: st = "T"; break; // SSTOP
+                case 5: st = "Z"; break; // SZOMB
+                default: st = "S"; break;
+            }
+            rows.push_back({
+                static_cast<lua_Integer>(pids[i]),
+                std::string(info.pbsd.pbi_comm),
+                st,
+                static_cast<lua_Integer>(info.ptinfo.pti_resident_size / 1024),
+            });
+        }
+    }
+#endif
+
+    std::sort(rows.begin(), rows.end(),
+              [](const ProcRow& a, const ProcRow& b) { return a.pid < b.pid; });
+
+    lua_createtable(L, static_cast<int>(rows.size()), 0);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, rows[i].pid);
+        lua_setfield(L, -2, "pid");
+        lua_pushlstring(L, rows[i].name.data(), rows[i].name.size());
+        lua_setfield(L, -2, "name");
+        lua_pushlstring(L, rows[i].state.data(), rows[i].state.size());
+        lua_setfield(L, -2, "state");
+        lua_pushinteger(L, rows[i].mem_kb);
+        lua_setfield(L, -2, "mem_kb");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
 // Built-in structured pipeline helpers loaded before ~/.config/wisp/init.lua,
 // so users can use them out of the box or override any of them in their config.
 const char kPrelude[] = R"lua(
@@ -179,19 +283,19 @@ function where(rows, a, op, val)
   for _, row in ipairs(rows) do
     local lhs = type(row) == "table" and row[a] or nil
     local ok = false
-    if op == "~=" then
+    if op == "~=" or op == "match" then
       ok = lhs ~= nil and tostring(lhs):find(tostring(val or "")) ~= nil
     elseif lhs ~= nil then
       local num_lhs = tonumber(lhs)
       local l, r
       if num_lhs and num_rhs then l, r = num_lhs, num_rhs
       else l, r = tostring(lhs), tostring(val or "") end
-      if op == "==" or op == "=" then ok = l == r
-      elseif op == "!=" then ok = l ~= r
-      elseif op == ">" then ok = l > r
-      elseif op == ">=" then ok = l >= r
-      elseif op == "<" then ok = l < r
-      elseif op == "<=" then ok = l <= r
+      if op == "==" or op == "=" or op == "eq" then ok = l == r
+      elseif op == "!=" or op == "ne" then ok = l ~= r
+      elseif op == ">" or op == "gt" then ok = l > r
+      elseif op == ">=" or op == "ge" then ok = l >= r
+      elseif op == "<" or op == "lt" then ok = l < r
+      elseif op == "<=" or op == "le" then ok = l <= r
       else error("where: unknown operator '" .. tostring(op) .. "'") end
     end
     if ok then out[#out + 1] = row end
@@ -314,6 +418,161 @@ end
 
 function to_json(input)
   return json_encode(input)
+end
+
+function from_json(input)
+  local s
+  if type(input) == "table" then s = table.concat(input, "\n")
+  elseif type(input) == "string" then s = input
+  else return nil end
+  local len = #s
+  local pos = 1
+  local function skip_ws()
+    pos = s:match("^%s*()", pos)
+  end
+  local parse_val
+  local function parse_str()
+    pos = pos + 1
+    local out = {}
+    while pos <= len do
+      local c = s:sub(pos, pos)
+      if c == '"' then pos = pos + 1; return table.concat(out) end
+      if c == '\\' then
+        pos = pos + 1
+        local e = s:sub(pos, pos)
+        if e == '"' or e == '\\' or e == '/' then out[#out + 1] = e; pos = pos + 1
+        elseif e == 'b' then out[#out + 1] = '\b'; pos = pos + 1
+        elseif e == 'f' then out[#out + 1] = '\f'; pos = pos + 1
+        elseif e == 'n' then out[#out + 1] = '\n'; pos = pos + 1
+        elseif e == 'r' then out[#out + 1] = '\r'; pos = pos + 1
+        elseif e == 't' then out[#out + 1] = '\t'; pos = pos + 1
+        elseif e == 'u' then
+          local hex = s:sub(pos + 1, pos + 4)
+          local cp = tonumber(hex, 16)
+          if not cp or #hex < 4 then error("from_json: invalid \\u escape at " .. pos) end
+          pos = pos + 5
+          out[#out + 1] = utf8.char(cp)
+        else error("from_json: invalid escape \\" .. e .. " at " .. pos) end
+      else
+        local next_special = s:find('[\\"]', pos)
+        if not next_special then error("from_json: unterminated string") end
+        out[#out + 1] = s:sub(pos, next_special - 1)
+        pos = next_special
+      end
+    end
+    error("from_json: unterminated string")
+  end
+  local function parse_arr()
+    pos = pos + 1
+    skip_ws()
+    local arr = {}
+    if s:sub(pos, pos) == ']' then pos = pos + 1; return arr end
+    while true do
+      arr[#arr + 1] = parse_val()
+      skip_ws()
+      local c = s:sub(pos, pos)
+      if c == ']' then pos = pos + 1; return arr end
+      if c ~= ',' then error("from_json: expected ',' or ']' at " .. pos) end
+      pos = pos + 1
+    end
+  end
+  local function parse_obj()
+    pos = pos + 1
+    skip_ws()
+    local obj = {}
+    if s:sub(pos, pos) == '}' then pos = pos + 1; return obj end
+    while true do
+      skip_ws()
+      if s:sub(pos, pos) ~= '"' then error("from_json: expected string key at " .. pos) end
+      local k = parse_str()
+      skip_ws()
+      if s:sub(pos, pos) ~= ':' then error("from_json: expected ':' at " .. pos) end
+      pos = pos + 1
+      obj[k] = parse_val()
+      skip_ws()
+      local c = s:sub(pos, pos)
+      if c == '}' then pos = pos + 1; return obj end
+      if c ~= ',' then error("from_json: expected ',' or '}' at " .. pos) end
+      pos = pos + 1
+    end
+  end
+  parse_val = function()
+    skip_ws()
+    local c = s:sub(pos, pos)
+    if c == '"' then return parse_str()
+    elseif c == '[' then return parse_arr()
+    elseif c == '{' then return parse_obj()
+    elseif s:sub(pos, pos + 3) == "true" then pos = pos + 4; return true
+    elseif s:sub(pos, pos + 4) == "false" then pos = pos + 5; return false
+    elseif s:sub(pos, pos + 3) == "null" then pos = pos + 4; return nil
+    else
+      local num_s, nxt = s:match("^(-?%d+%.?%d*[eE]?[+-]?%d*)()", pos)
+      local n = num_s and tonumber(num_s)
+      if not n then error("from_json: unexpected token at " .. pos) end
+      pos = nxt
+      return n
+    end
+  end
+  skip_ws()
+  if pos > len then return nil end
+  return parse_val()
+end
+
+function from_csv(input, delim)
+  local sep = (type(delim) == "string" and #delim > 0) and delim:sub(1, 1) or ","
+  local raw_lines
+  if type(input) == "table" then raw_lines = input
+  elseif type(input) == "string" then raw_lines = lines(input)
+  else return {} end
+  local function split_row(line)
+    local fields, i, n = {}, 1, #line
+    while i <= n do
+      if line:sub(i, i) == '"' then
+        i = i + 1
+        local buf = {}
+        while i <= n do
+          local c = line:sub(i, i)
+          if c == '"' then
+            if line:sub(i + 1, i + 1) == '"' then buf[#buf + 1] = '"'; i = i + 2
+            else i = i + 1; break end
+          else buf[#buf + 1] = c; i = i + 1 end
+        end
+        fields[#fields + 1] = table.concat(buf)
+        if line:sub(i, i) == sep then i = i + 1 end
+      else
+        local nxt = line:find(sep, i, true)
+        if nxt then
+          fields[#fields + 1] = line:sub(i, nxt - 1)
+          i = nxt + 1
+          if i > n then fields[#fields + 1] = "" end
+        else
+          fields[#fields + 1] = line:sub(i)
+          break
+        end
+      end
+    end
+    return fields
+  end
+  local headers = nil
+  local out = {}
+  for _, line in ipairs(raw_lines) do
+    local clean = tostring(line):gsub("\r$", "")
+    if clean ~= "" then
+      local row = split_row(clean)
+      if not headers then
+        headers = row
+      else
+        local rec = {}
+        for idx, h in ipairs(headers) do
+          local v = row[idx] or ""
+          local num = tonumber(v)
+          rec[h] = (num ~= nil and v ~= "") and num or v
+        end
+        out[#out + 1] = rec
+      end
+    end
+  end
+  return out
 end
 )lua";
 
@@ -457,8 +716,8 @@ void append_scalar(std::string& out, const LuaValue& v) {
 }
 
 int key_rank(const std::string& k) {
-    static const char* const kPrimary[] = {"name", "id", "pid", "type", "size", "mtime"};
-    for (int i = 0; i < 6; ++i)
+    static const char* const kPrimary[] = {"pid", "id", "name", "type", "state", "size", "mem_kb", "mtime"};
+    for (int i = 0; i < 8; ++i)
         if (k == kPrimary[i]) return i;
     return 100;
 }
@@ -611,9 +870,11 @@ lua_State* init() {
     lua_setglobal(L, "setenv");
     lua_pushcfunction(L, l_files);
     lua_setglobal(L, "files");
+    lua_pushcfunction(L, l_procs);
+    lua_setglobal(L, "procs");
 
     lua_createtable(L, 0, 2);
-    lua_pushliteral(L, "3.2.1");
+    lua_pushliteral(L, "3.3.0");
     lua_setfield(L, -2, "version");
     lua_pushinteger(L, 0);
     lua_setfield(L, -2, "status");
@@ -711,6 +972,22 @@ CmdKind resolve_command(lua_State* L, const std::string& name) {
     bool is_fn = lua_isfunction(L, -1);
     lua_pop(L, 1);
     return is_fn ? CmdKind::LuaFn : CmdKind::External;
+}
+
+std::vector<std::string> lua_function_names(lua_State* L) {
+    std::vector<std::string> out;
+    if (!L) return out;
+    lua_pushglobaltable(L);
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_isfunction(L, -1)) {
+            if (const char* name = lua_tostring(L, -2)) out.emplace_back(name);
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 void push_value(lua_State* L, const LuaValue& v) { push_luavalue(L, v); }

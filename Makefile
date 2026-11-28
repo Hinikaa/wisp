@@ -58,7 +58,8 @@ test: $(TESTS) wisp
 		echo "test_interactive: skipped (no python3)"
 
 install: wisp
-	install -Dm755 wisp $(DESTDIR)$(PREFIX)/bin/wisp
+	mkdir -p $(DESTDIR)$(PREFIX)/bin
+	install -m755 wisp $(DESTDIR)$(PREFIX)/bin/wisp
 	strip $(DESTDIR)$(PREFIX)/bin/wisp
 	@echo "installed $(DESTDIR)$(PREFIX)/bin/wisp -- add it to /etc/shells to use as a login shell"
 

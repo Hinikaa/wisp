@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 
 extern "C" {
 #include <lauxlib.h>
@@ -279,14 +280,45 @@ std::vector<std::string> glob_expand_word(const Word& w) {
     return out;
 }
 
-std::string find_similar_command(const std::string& name, int threshold) {
+std::string find_similar_command(const std::string& name, int threshold, lua_State* L,
+                                 const Executor::HistoryCallback& history_cb) {
+    std::unordered_map<std::string, int> freq;
+    if (history_cb) {
+        for (const auto& line : history_cb()) {
+            size_t s = line.find_first_not_of(" \t");
+            if (s == std::string::npos || line[s] == ':') continue;
+            size_t e = line.find_first_of(" \t|;&", s);
+            std::string cmd = (e == std::string::npos) ? line.substr(s) : line.substr(s, e - s);
+            if (!cmd.empty()) ++freq[cmd];
+        }
+    }
+
     std::string best;
     int best_dist = threshold + 1;
+    int best_freq = -1;
+    bool best_native = false;
     std::vector<int> prev2, prev, curr;
-    for (const std::string& candidate : path_executables()) {
-        int dist = edit_distance_bounded(name, candidate, best_dist, prev2, prev, curr);
-        if (dist < best_dist) { best_dist = dist; best = candidate; }
-    }
+
+    auto consider = [&](const std::string& candidate, bool is_native) {
+        if (candidate == name) return;
+        int dist = edit_distance_bounded(name, candidate, best_dist + 1, prev2, prev, curr);
+        if (dist > threshold) return;
+        int f = 0;
+        if (auto it = freq.find(candidate); it != freq.end()) f = it->second;
+        bool better = (dist < best_dist) ||
+                      (dist == best_dist && f > best_freq) ||
+                      (dist == best_dist && f == best_freq && is_native && !best_native);
+        if (better) {
+            best_dist = dist;
+            best_freq = f;
+            best_native = is_native;
+            best = candidate;
+        }
+    };
+
+    for (const char* b : kBuiltins) consider(b, true);
+    for (const std::string& fn : lua_env::lua_function_names(L)) consider(fn, true);
+    for (const std::string& candidate : path_executables()) consider(candidate, false);
     return best_dist <= threshold ? best : "";
 }
 
@@ -825,7 +857,8 @@ LuaValue Executor::run_native_run(const std::vector<ExpCmd>& cmds, const std::ve
             std::vector<std::string> args(ec.argv.begin() + 1, ec.argv.end());
             lua_env::call_lua_function_top(L_, ec.argv[0], args, has_input);
             has_input = true;
-            last_status_ = (lua_isnil(L_, -1) || (lua_isboolean(L_, -1) && !lua_toboolean(L_, -1))) ? 1 : 0;
+            // Void Lua helpers return nil (status 0); explicit `false` signals failure.
+            last_status_ = (lua_isboolean(L_, -1) && !lua_toboolean(L_, -1)) ? 1 : 0;
             // Rendered here, inside the redirect, so `f > out` catches the
             // returned value and anything the function printed alike.
             if (last_in_pipeline) {
@@ -1403,7 +1436,7 @@ int Executor::run_pipeline(const Pipeline& pl, bool background, const std::strin
             execvp(argv_c[0], argv_c.data());
             if (errno == ENOENT) {
                 std::fprintf(stderr, "wisp: %s: command not found", ec.argv[0].c_str());
-                std::string hint = find_similar_command(ec.argv[0], 3);
+                std::string hint = find_similar_command(ec.argv[0], 3, L_, history_cb_);
                 if (!hint.empty()) std::fprintf(stderr, " (did you mean '%s'?)", hint.c_str());
                 std::fputc('\n', stderr);
             } else {

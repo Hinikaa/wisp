@@ -35,12 +35,19 @@ Everything stays dynamically typed with normal Lua values (`string`, `number`, `
 
 Grab `wisp-linux-x86_64.tar.gz` or `wisp-linux-aarch64.tar.gz` from the [Releases](https://github.com/hinikaa/wisp/releases) page, extract it, and put `wisp` on your `$PATH`. Release binaries link Lua 5.4 statically so they run across distros without library version mismatches.
 
+### Arch Linux (AUR)
+
+```sh
+yay -S wisp-shell
+# or: paru -S wisp-shell
+```
+
 ### Build from source
 
 You'll need a C++17 compiler and Lua 5.4 development headers discoverable via `pkg-config`:
 
 - **Debian / Ubuntu:** `sudo apt install liblua5.4-dev`
-- **Arch:** `sudo pacman -S lua54` (an AUR-ready [`PKGBUILD`](packaging/aur/PKGBUILD) is also included under `packaging/aur/`)
+- **Arch:** `sudo pacman -S lua54`
 
 Then build and install:
 

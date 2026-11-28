@@ -121,7 +121,7 @@ survived'                               ':function big() local t={} for i=1,5000
 
 # --- argv --------------------------------------------------------------------
 printf 'print(arg[1], arg[2])\n' > "$tmp/args.lua"
-check_arg '--version'       'wisp 3.2.0' --version
+check_arg '--version'       'wisp 3.2.1' --version
 check_arg '-c runs shell'   'hi'        -c 'echo hi'
 check_arg '-c chains'       'a
 b'                                      -c 'echo a && echo b'

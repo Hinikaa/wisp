@@ -613,7 +613,7 @@ lua_State* init() {
     lua_setglobal(L, "files");
 
     lua_createtable(L, 0, 2);
-    lua_pushliteral(L, "3.2.0");
+    lua_pushliteral(L, "3.2.1");
     lua_setfield(L, -2, "version");
     lua_pushinteger(L, 0);
     lua_setfield(L, -2, "status");

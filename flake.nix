@@ -12,7 +12,7 @@
       packages = forAllSystems (pkgs: {
         wisp = pkgs.stdenv.mkDerivation {
           pname = "wisp";
-          version = "3.2.0";
+          version = "3.2.1";
           src = self;
 
           nativeBuildInputs = [ pkgs.pkg-config ];
